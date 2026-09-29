@@ -99,10 +99,6 @@ func transcribeWAV(ctx context.Context, engine, model string, data []byte) (stri
 }
 
 func handleTranscription(w http.ResponseWriter, r *http.Request) {
-	if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {
-		writeError(w, http.StatusForbidden, "只允许学习中心本地页面发起转写")
-		return
-	}
 	if !transcriptionLock.TryLock() {
 		writeError(w, http.StatusConflict, "已有本地转写正在进行，请等待完成")
 		return

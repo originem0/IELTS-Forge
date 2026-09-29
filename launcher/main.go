@@ -13,21 +13,28 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	maxRequest    = 1 << 20
-	maxAIRequest  = 48 << 20
-	maxAIResponse = 4 << 20
-	maxDataFile   = 128 << 20
-	dataFilename  = "EnglishLearnPath-data.json"
-	backupName    = "EnglishLearnPath-data.backup.json"
-	configDirname = "runtime-data"
+	maxRequest      = 1 << 20
+	maxAIRequest    = 48 << 20
+	maxAIResponse   = 4 << 20
+	maxDataFile     = 128 << 20
+	dataFilename    = "EnglishLearnPath-data.json"
+	backupName      = "EnglishLearnPath-data.backup.json"
+	configDirname   = "runtime-data"
+	dailyBackupKeep = 30
+
+	// deepSeekVisionModel is DeepSeek's image-capable model. Provider model names
+	// drift over time; if DeepSeek renames it, update image reviews here.
+	deepSeekVisionModel = "deepseek-v4-flash-vision-exp"
 )
 
 type aiConfig struct {
@@ -89,10 +96,12 @@ type upstreamResponse struct {
 }
 
 var (
-	settings   = &configStore{}
-	client     = &http.Client{Timeout: 90 * time.Second}
-	disk       *diskStore
-	appVersion = "dev"
+	settings     = &configStore{}
+	client       = &http.Client{Timeout: 90 * time.Second}
+	disk         *diskStore
+	appVersion   = "dev"
+	httpServer   *http.Server
+	shutdownOnce sync.Once
 )
 
 func main() {
@@ -118,7 +127,8 @@ func main() {
 		writeStartupError(fmt.Errorf("无法启动本地服务：%w", err))
 		return
 	}
-	appURL := "http://" + listener.Addr().String()
+	listenAddr := listener.Addr().String()
+	appURL := "http://" + listenAddr
 
 	mux := http.NewServeMux()
 	registerAPI(mux)
@@ -128,11 +138,12 @@ func main() {
 	mux.Handle("/", secureStaticServer(appDir))
 
 	server := &http.Server{
-		Handler:           securityHeaders(mux),
+		Handler:           securityHeaders(guardLocalRequests(listenAddr, mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	httpServer = server
 
 	go func() {
 		time.Sleep(350 * time.Millisecond)
@@ -144,6 +155,21 @@ func main() {
 	}
 }
 
+// beginShutdown drains in-flight requests (e.g. a data save that is still
+// writing) for a short grace period before exiting, so the user's last edit is
+// not truncated. Guarded by sync.Once against repeated shutdown calls.
+func beginShutdown() {
+	shutdownOnce.Do(func() {
+		time.Sleep(150 * time.Millisecond) // let the ok response flush to the browser
+		if httpServer != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = httpServer.Shutdown(ctx)
+		}
+		os.Exit(0)
+	})
+}
+
 func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/app/info", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": "English Learning Path", "version": appVersion, "local": true})
@@ -153,10 +179,7 @@ func registerAPI(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/app/shutdown", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-		go func() {
-			time.Sleep(250 * time.Millisecond)
-			os.Exit(0)
-		}()
+		go beginShutdown()
 	})
 	mux.HandleFunc("GET /api/data/status", handleDataStatus)
 	mux.HandleFunc("GET /api/data", handleDataLoad)
@@ -178,7 +201,7 @@ func handleDataStatus(w http.ResponseWriter, _ *http.Request) {
 func handleDataLoad(w http.ResponseWriter, _ *http.Request) {
 	data, err := disk.load()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取本地数据失败："+err.Error())
+		logAndError(w, http.StatusInternalServerError, "读取本地数据失败，请检查数据文件夹权限或数据文件是否完整", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": data, "storage": disk.status()})
@@ -195,7 +218,7 @@ func handleDataSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := disk.save(payload.Data); err != nil {
-		writeError(w, http.StatusInternalServerError, "写入本地文件失败："+err.Error())
+		logAndError(w, http.StatusInternalServerError, "写入本地文件失败，请检查数据文件夹权限", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"saved": true, "storage": disk.status()})
@@ -204,7 +227,7 @@ func handleDataSave(w http.ResponseWriter, r *http.Request) {
 func handleDataSelectDirectory(w http.ResponseWriter, _ *http.Request) {
 	selected, canceled, err := selectDirectory()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "打开文件夹选择器失败："+err.Error())
+		logAndError(w, http.StatusInternalServerError, "打开文件夹选择器失败", err)
 		return
 	}
 	if canceled {
@@ -213,12 +236,12 @@ func handleDataSelectDirectory(w http.ResponseWriter, _ *http.Request) {
 	}
 	loadedExisting, err := disk.switchDirectory(selected)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "绑定数据文件夹失败："+err.Error())
+		logAndError(w, http.StatusInternalServerError, "绑定数据文件夹失败，请检查该文件夹权限，或所选文件夹中的数据文件是否有效", err)
 		return
 	}
 	data, err := disk.load()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取新数据文件夹失败："+err.Error())
+		logAndError(w, http.StatusInternalServerError, "读取新数据文件夹失败，请检查该文件夹权限", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -246,7 +269,7 @@ func handleDataOpenDirectory(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	if err := command.Start(); err != nil {
-		writeError(w, http.StatusInternalServerError, "无法打开数据文件夹："+err.Error())
+		logAndError(w, http.StatusInternalServerError, "无法打开数据文件夹", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"opened": true})
@@ -348,7 +371,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 			// DeepSeek accepts image content only on its dedicated vision model.
 			// Switch just this request so saved text-model settings and keys keep
 			// working for ordinary feedback.
-			cfg.Model = "deepseek-v4-flash-vision-exp"
+			cfg.Model = deepSeekVisionModel
 		}
 	}
 	maxTokens := input.MaxTokens
@@ -411,17 +434,22 @@ func validateOutputContract(content, contract string) error {
 	case "review-markdown-v1-writing", "review-markdown-v1-speaking":
 		required := []string{"### 评分与小分", "### 总体评价", "### 确定语法错误", "### 原文优化建议", "### 目标水平范文", "### 最终值得记忆的语料"}
 		if contract == "review-markdown-v1-speaking" {
-			required = append(required[:2], append([]string{"### 转写整理稿"}, required[2:]...)...)
+			// Speaking inserts a transcript-cleanup section after the overview.
+			// Build the list explicitly; slicing + append here would alias the
+			// shared backing array and corrupt later headings.
+			required = []string{"### 评分与小分", "### 总体评价", "### 转写整理稿", "### 确定语法错误", "### 原文优化建议", "### 目标水平范文", "### 最终值得记忆的语料"}
 		}
 		if !strings.HasPrefix(trimmed, "主题：") {
 			return errors.New("模型没有遵循网页报告格式，第一行必须是“主题：具体主题”")
 		}
 		position := -1
 		for _, heading := range required {
-			if strings.Count(content, heading) != 1 {
+			// Accept the heading appearing more than once (a model may legitimately
+			// quote a section title in the body); only require presence and order.
+			next := strings.Index(content, heading)
+			if next < 0 {
 				return fmt.Errorf("模型没有遵循网页报告格式，缺少 %q；请重试或更换兼容模型", strings.TrimPrefix(heading, "### "))
 			}
-			next := strings.Index(content, heading)
 			if next <= position {
 				return errors.New("模型没有按网页所需顺序返回报告章节，请重试或更换兼容模型")
 			}
@@ -740,6 +768,7 @@ func (s *diskStore) writeLocked(data json.RawMessage) error {
 			if _, err := os.Stat(dailyPath); errors.Is(err, os.ErrNotExist) {
 				_ = os.WriteFile(dailyPath, previous, 0600)
 			}
+			pruneDailyBackups(backupsDir, dailyBackupKeep)
 		}
 	}
 
@@ -752,11 +781,11 @@ func (s *diskStore) writeLocked(data json.RawMessage) error {
 	if err := os.WriteFile(temporaryPath, encoded, 0600); err != nil {
 		return err
 	}
-	if err := os.Remove(dataPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		_ = os.Remove(temporaryPath)
-		return err
-	}
+	// os.Rename atomically replaces an existing file on both Windows (MoveFileEx
+	// with MOVEFILE_REPLACE_EXISTING) and Unix, so there is never a window where
+	// the primary data file is missing. Do not unlink it first.
 	if err := os.Rename(temporaryPath, dataPath); err != nil {
+		_ = os.Remove(temporaryPath)
 		if previousErr == nil {
 			_ = os.WriteFile(dataPath, previous, 0600)
 		}
@@ -764,6 +793,30 @@ func (s *diskStore) writeLocked(data json.RawMessage) error {
 	}
 	s.lastWrite = envelope.UpdatedAt
 	return nil
+}
+
+// pruneDailyBackups keeps only the newest keep daily snapshots so the backups
+// directory cannot grow without bound over months of use. The yyyy-mm-dd file
+// names sort chronologically, so the oldest names are simply the smallest.
+func pruneDailyBackups(dir string, keep int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var daily []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() && strings.HasPrefix(name, "EnglishLearnPath-data-") && strings.HasSuffix(name, ".json") {
+			daily = append(daily, name)
+		}
+	}
+	if len(daily) <= keep {
+		return
+	}
+	sort.Strings(daily)
+	for _, name := range daily[:len(daily)-keep] {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
 }
 
 func (s *diskStore) switchDirectory(selected string) (bool, error) {
@@ -832,11 +885,56 @@ func decodeJSONLimit(w http.ResponseWriter, r *http.Request, target any, limit i
 func secureStaticServer(dir string) http.Handler {
 	files := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(filepath.Clean(r.URL.Path), "..") {
+		// URL paths use slash semantics; use path.Clean, not the OS-specific
+		// filepath.Clean, to reject traversal. Defense in depth over FileServer.
+		if strings.Contains(path.Clean("/"+r.URL.Path), "..") {
 			http.NotFound(w, r)
 			return
 		}
 		files.ServeHTTP(w, r)
+	})
+}
+
+// guardLocalRequests protects the /api/ surface of this loopback server against
+// DNS-rebinding (a foreign hostname resolved to 127.0.0.1) and cross-site CSRF
+// from any web page the user happens to have open. Static assets are governed by
+// CSP instead. Non-browser callers (no Sec-Fetch metadata and no Origin, e.g. a
+// local curl or the test suite) are allowed so local scripting keeps working.
+func guardLocalRequests(listenAddr string, next http.Handler) http.Handler {
+	_, port, _ := net.SplitHostPort(listenAddr)
+	allowedHosts := map[string]bool{listenAddr: true}
+	if port != "" {
+		for _, host := range []string{"localhost", "127.0.0.1", "[::1]"} {
+			allowedHosts[host+":"+port] = true
+		}
+	}
+	allowedOrigins := map[string]bool{}
+	for host := range allowedHosts {
+		allowedOrigins["http://"+host] = true
+		allowedOrigins["https://"+host] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			// Host allowlist defeats DNS rebinding: a rebound request arrives with
+			// the attacker's hostname in Host, which is not the loopback listener.
+			if !allowedHosts[r.Host] {
+				writeError(w, http.StatusForbidden, "只允许本地学习中心访问该接口")
+				return
+			}
+			// Sec-Fetch-Site is set by all modern browsers and cannot be forged by
+			// script; a cross-site/same-site value means this is not our own page.
+			switch strings.ToLower(r.Header.Get("Sec-Fetch-Site")) {
+			case "cross-site", "same-site":
+				writeError(w, http.StatusForbidden, "只允许本地学习中心页面发起请求")
+				return
+			}
+			// Belt and suspenders for any browser that omits Sec-Fetch metadata.
+			if origin := r.Header.Get("Origin"); origin != "" && !allowedOrigins[origin] {
+				writeError(w, http.StatusForbidden, "请求来源不被允许")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -898,6 +996,13 @@ func writeStartupError(err error) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// logAndError records the detailed error to the local log (it may contain file
+// system paths) and returns only a path-free message to the client.
+func logAndError(w http.ResponseWriter, status int, publicMessage string, err error) {
+	log.Printf("EnglishLearnPath: %s: %v", publicMessage, err)
+	writeError(w, status, publicMessage)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

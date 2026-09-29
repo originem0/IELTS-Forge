@@ -99,13 +99,3 @@ func TestTranscriptionSerializesRequests(t *testing.T) {
 		t.Fatalf("got %d", response.Code)
 	}
 }
-
-func TestTranscriptionRejectsForeignOrigin(t *testing.T) {
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/transcription", nil)
-	request.Header.Set("Origin", "https://example.com")
-	response := httptest.NewRecorder()
-	handleTranscription(response, request)
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("got %d", response.Code)
-	}
-}

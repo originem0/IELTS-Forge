@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -205,6 +206,82 @@ func TestProviderNeutralOutputContracts(t *testing.T) {
 	plan := `{"summary":"plan","priorities":[],"phases":[]}`
 	if err := validateOutputContract(plan, "study-plan-json-v1"); err != nil {
 		t.Fatalf("valid plan rejected: %v", err)
+	}
+}
+
+func TestGuardLocalRequests(t *testing.T) {
+	const addr = "127.0.0.1:52345"
+	guard := guardLocalRequests(addr, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	run := func(path string, mutate func(*http.Request)) int {
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, nil)
+		r.Host = addr
+		mutate(r)
+		w := httptest.NewRecorder()
+		guard.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := run("/api/data", func(r *http.Request) {
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.Header.Set("Origin", "http://"+addr)
+	}); code != http.StatusNoContent {
+		t.Fatalf("same-origin request blocked: %d", code)
+	}
+	if code := run("/api/data", func(*http.Request) {}); code != http.StatusNoContent {
+		t.Fatalf("headerless local request blocked: %d", code)
+	}
+	if code := run("/api/data", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }); code != http.StatusForbidden {
+		t.Fatalf("cross-site request allowed: %d", code)
+	}
+	if code := run("/api/data", func(r *http.Request) { r.Header.Set("Origin", "https://example.com") }); code != http.StatusForbidden {
+		t.Fatalf("foreign origin allowed: %d", code)
+	}
+	if code := run("/api/data", func(r *http.Request) { r.Host = "evil.example.com" }); code != http.StatusForbidden {
+		t.Fatalf("rebinding host allowed: %d", code)
+	}
+	// Static assets are governed by CSP, not the API guard.
+	if code := run("/index.html", func(r *http.Request) {
+		r.Host = "evil.example.com"
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+	}); code != http.StatusNoContent {
+		t.Fatalf("static path should bypass api guard: %d", code)
+	}
+}
+
+func TestDailyBackupsArePruned(t *testing.T) {
+	backupsDir := filepath.Join(t.TempDir(), "backups")
+	if err := os.MkdirAll(backupsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for month := 1; month <= 12; month++ {
+		for day := 1; day <= 4; day++ {
+			name := fmt.Sprintf("EnglishLearnPath-data-2024-%02d-%02d.json", month, day)
+			if err := os.WriteFile(filepath.Join(backupsDir, name), []byte("{}"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// A non-daily file must never be touched.
+	if err := os.WriteFile(filepath.Join(backupsDir, "notes.txt"), []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pruneDailyBackups(backupsDir, dailyBackupKeep)
+	entries, err := os.ReadDir(backupsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != dailyBackupKeep+1 {
+		t.Fatalf("expected %d files after prune, got %d", dailyBackupKeep+1, len(entries))
+	}
+	if _, err := os.Stat(filepath.Join(backupsDir, "EnglishLearnPath-data-2024-01-01.json")); !os.IsNotExist(err) {
+		t.Fatal("oldest daily backup should have been pruned")
+	}
+	if _, err := os.Stat(filepath.Join(backupsDir, "EnglishLearnPath-data-2024-12-04.json")); err != nil {
+		t.Fatal("newest daily backup should be kept")
+	}
+	if _, err := os.Stat(filepath.Join(backupsDir, "notes.txt")); err != nil {
+		t.Fatal("unrelated file must not be pruned")
 	}
 }
 
