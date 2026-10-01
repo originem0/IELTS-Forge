@@ -63,7 +63,7 @@ func (s *configStore) restore() {
 	}
 	defer clear(plain)
 	var cfg aiConfig
-	if json.Unmarshal(plain, &cfg) != nil || validateConfig(cfg) != nil || !cfg.Connected {
+	if json.Unmarshal(plain, &cfg) != nil || (!cfg.Connected && (cfg.Vision == nil || !cfg.Vision.Connected)) || (cfg.Connected && validateConfig(cfg) != nil) || (cfg.Vision != nil && validateConfig(cfg.Vision.config()) != nil) {
 		s.loadError = "本地加密配置无效，请重新填写并保存"
 		return
 	}

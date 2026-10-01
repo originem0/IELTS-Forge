@@ -1,13 +1,22 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { createRequire } from 'node:module';
+const storageClient = createRequire(import.meta.url)('../app/storage-client.js');
+const mediaClient = createRequire(import.meta.url)('../app/media-client.js');
+const applyStateRequest = createRequire(import.meta.url)('./state-api-fixture.cjs');
+const practiceLifecycle = createRequire(import.meta.url)('../app/practice-lifecycle.js');
+const planBudget = createRequire(import.meta.url)('../app/plan-budget.js');
 
+const aiSource = await readFile(new URL('../app/ai-client.js',import.meta.url),'utf8');
+const reviewSource = await readFile(new URL('../app/review-workspace.js',import.meta.url),'utf8');
+const assessmentSource = await readFile(new URL('../app/assessment.js',import.meta.url),'utf8');
 const source = await readFile(new URL('../app/app.js', import.meta.url), 'utf8');
 const timers = new Set();
 function harness(initialState, localWhisper) {
   localWhisper ||= { status: async () => ({ready:true}), transcribe: async () => 'Local Whisper result.' };
   const elements = new Map();
-  let persisted;
+  let persisted = structuredClone(initialState || {writings:[],speaking:[],mistakes:[]});
   let failWrites = false;
   const chatRequests = [];
   const element = selector => {
@@ -54,9 +63,10 @@ function harness(initialState, localWhisper) {
     abort() {}
   }
   const context = vm.createContext({
-    Blob, Uint8Array, atob, structuredClone, AbortController, FileReader: Reader,
+    fixtureLoaded: value => { persisted = JSON.parse(JSON.stringify(value)); },
+    Blob, Uint8Array, atob, structuredClone, AbortController, CustomEvent, FileReader: Reader,
     MediaRecorder: Recorder, URL: { createObjectURL: () => 'blob:test-audio', revokeObjectURL() {} },
-    window: { localWhisper, SpeechRecognition: Recognition, addEventListener() {} },
+    window: { ELPStorage: {create: options => storageClient.create({...options,request:(...args)=>context.fetch(...args)})}, ELPMedia: mediaClient, ELPPractice: practiceLifecycle, localWhisper, ELPPlanBudget: planBudget, SpeechRecognition: Recognition, addEventListener() {}, dispatchEvent() {} },
     navigator: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) } },
     document: { querySelector: element, querySelectorAll: () => [] },
     location: { hash: '#unit-test' }, confirm: () => true,
@@ -71,18 +81,21 @@ function harness(initialState, localWhisper) {
           : 'Synthetic feedback';
         return { ok: true, json: async () => ({ content }) };
       }
-      if (url === '/api/data' && options?.method === 'PUT') {
+      if (url === '/api/data' && ['PUT','PATCH'].includes(options?.method)) {
         if (failWrites) return { ok: false, json: async () => ({ error: 'test disk failure' }) };
-        persisted = JSON.parse(options.body).data;
+        persisted = applyStateRequest(persisted,JSON.parse(options.body),options.method);
       }
       return { ok: true, json: async () => ({ storage: { bound: true, directory: 'test-data' } }) };
     }
   });
+  vm.runInContext(aiSource,context);
+  vm.runInContext(reviewSource,context);
+  vm.runInContext(assessmentSource,context);
   vm.runInContext(source.replace(/  initialize\(\);\s*\}\)\(\);\s*$/, `
-    globalThis.api = { refreshTranscriptionStatus, transcribeLocalRecording, bindEvents, toggleRecording, saveWriting, saveSpeaking, loadSpeaking, newSpeaking, loadWriting, todayPlanTasks, normalizePlanDay, normalizeAiPlanDay, reviewWriting, reviewSpeaking, reviewLearnerContext, reviewTopicTitle, practiceTitle, generateLanguageBank, normalizeLanguageBank, languageBankSource,
+    globalThis.api = { calculateStreak, refreshTranscriptionStatus, transcribeLocalRecording, bindEvents, toggleRecording, saveWriting, saveSpeaking, loadSpeaking, newSpeaking, loadWriting, todayPlanTasks, normalizePlanDay, normalizeAiPlanDay, reviewWriting, reviewSpeaking, reviewLearnerContext, reviewTopicTitle, practiceTitle, generateLanguageBank, normalizeLanguageBank, languageBankSource,
       enableAi() { aiConnected = true; },
       get busy() { return recordingBusy; }, get blob() { return recordingBlob; }, get speakingPhase() { return speakingPhase; },
-      get state() { return state; }, set state(value) { state = normalizeState(value); }
+      get state() { return state; }, set state(value) { fixtureLoaded(value); state = persistence.adopt(normalizeState(value)); }
     };
   })();`), context);
   if (initialState) context.api.state = initialState;
@@ -97,7 +110,7 @@ try {
   let completeTranscription;
   const offline = harness(undefined, {status: async () => ({ready:true}), transcribe: () => new Promise(resolve => {completeTranscription = resolve;})});
   await offline.api.refreshTranscriptionStatus();
-  assert.match(offline.element('#transcriptionStatus').textContent, /自动在本机转写/);
+  assert.match(offline.element('#transcriptionStatus').textContent, /录音与转写已就绪/);
   await offline.api.toggleRecording();
   assert.equal(offline.recognitionStarts(), 0, 'offline capture must not invoke browser speech services');
   await offline.api.toggleRecording();
@@ -131,16 +144,20 @@ try {
   assert.equal(part2.element('#speakingTranscript').value, 'Local Whisper result.');
 
   const h = harness();
+  const localDate = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+  const now = new Date(); const yesterday = new Date(now); yesterday.setDate(yesterday.getDate()-1);
+  h.api.state.activityDates = [localDate(now), localDate(yesterday)];
+  assert.equal(h.api.calculateStreak(), 2, 'streak must compare local calendar dates rather than UTC midnights');
   assert.equal(h.api.reviewTopicTitle('- **主题**: 儿童成长环境的选择，属于社会与教育类话题。'), '儿童成长环境的选择');
   assert.equal(h.api.reviewTopicTitle('主题：城市与乡村的儿童成长'), '城市与乡村的儿童成长');
   assert.equal(h.api.practiceTitle({type:'Task 2', prompt:'A specific question'}), 'A specific question');
   assert.equal(h.api.practiceTitle({type:'Task 2', review:'- **主题**: 儿童成长环境的选择，属于社会与教育类话题。'}), '儿童成长环境的选择');
   assert.equal('listening' in h.api.state, false, 'fresh state must not create retired libraries');
   assert.equal('reading' in h.api.state, false);
-  assert.deepEqual(Object.keys(h.api.normalizePlanDay({ listening: 9, reading: 9, writing: 5, speaking: 10 })), ['writing', 'speaking', 'writingReview', 'writingRewrite', 'speakingReview', 'languageMinutes', 'reviewMinutes', 'note']);
+  assert.deepEqual(Object.keys(h.api.normalizePlanDay({ listening: 9, reading: 9, writing: 5, speaking: 10 })), ['writing', 'speaking', 'reading', 'listening', 'writingReview', 'writingRewrite', 'speakingReview', 'readingReview', 'listeningReview', 'languageMinutes', 'reviewMinutes', 'note']);
   assert.equal(h.api.normalizePlanDay({writing:5}).writing, 1, 'new writing volume must be capped');
   assert.equal(h.api.normalizePlanDay({speaking:10}).speaking, 2, 'new speaking volume must be capped');
-  assert.equal(JSON.stringify(h.api.normalizeAiPlanDay({writing:1,speaking:1})), JSON.stringify({writing:1,speaking:1,writingReview:1,writingRewrite:1,speakingReview:1,languageMinutes:10,reviewMinutes:0,note:''}), 'AI output must be expanded into a review-first loop');
+  assert.equal(JSON.stringify(h.api.normalizeAiPlanDay({writing:1,speaking:1})), JSON.stringify({writing:1,speaking:1,reading:0,listening:0,writingReview:1,writingRewrite:1,speakingReview:1,readingReview:0,listeningReview:0,languageMinutes:10,reviewMinutes:0,note:''}), 'AI output must preserve old plans while adding only requested skills');
   h.api.state = { listening: [{ id: 'keep-legacy' }], reading: [{ id: 'keep-old' }], writings: [], speaking: [] };
   await h.api.refreshTranscriptionStatus();
   await h.api.toggleRecording();

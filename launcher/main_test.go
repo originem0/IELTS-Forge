@@ -113,6 +113,7 @@ func TestSelectedDirectoryPersistsAcrossRestarts(t *testing.T) {
 		t.Fatal("fresh directory should not be reported as existing data")
 	}
 
+	first.close()
 	second, err := newDiskStore()
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +121,7 @@ func TestSelectedDirectoryPersistsAcrossRestarts(t *testing.T) {
 	if second.directoryPath() != dataRoot {
 		t.Fatalf("selected directory was not restored: %s", second.directoryPath())
 	}
+	t.Cleanup(second.close)
 	if _, err := os.Stat(filepath.Join(dataRoot, dataFilename)); err != nil {
 		t.Fatalf("data file was not created: %v", err)
 	}
@@ -146,6 +148,7 @@ func todayForTest() string {
 func TestBindingDoesNotCreateResourceDirectories(t *testing.T) {
 	root := t.TempDir()
 	store := &diskStore{configPath: filepath.Join(t.TempDir(), "config.json")}
+	t.Cleanup(store.close)
 	if _, err := store.switchDirectory(root); err != nil {
 		t.Fatal(err)
 	}

@@ -1,5 +1,6 @@
+const applyStateRequest = require('./state-api-fixture.cjs');
 // Synthetic records only: no real API calls, keys, audio or user data.
-const { chromium } = require('playwright');
+const { chromium } = require(process.env.ELP_PLAYWRIGHT_MODULE || 'playwright');
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -19,7 +20,7 @@ const server = http.createServer(async (req, res) => {
   if (req.url.startsWith('/api/')) {
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/api/data') {
-      if (req.method === 'PUT') { let body=''; for await(const chunk of req) body+=chunk; data=JSON.parse(body).data; }
+      if (['PUT','PATCH'].includes(req.method)) { let body=''; for await(const chunk of req) body+=chunk; data=applyStateRequest(data,JSON.parse(body),req.method); }
       res.end(JSON.stringify({ data, storage: { bound: true, ready: true } }));
     } else if (req.url === '/api/ai/status') res.end(JSON.stringify({ connected: true, model: 'synthetic' }));
     else if (req.url === '/api/ai/chat') { chatCalls++; let body=''; for await (const chunk of req) body+=chunk; const request=JSON.parse(body); res.end(JSON.stringify({ content:request.messages[0].content.startsWith('只为用户提供') ? punctuationResponse : markdown })); }
@@ -35,7 +36,7 @@ const server = http.createServer(async (req, res) => {
 });
 (async () => {
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
-  const browser=await chromium.launch({channel:'chrome',headless:true});
+  const browser=await chromium.launch({...(process.env.ELP_BROWSER_CHANNEL === 'bundled' ? {} : {channel:'chrome'}),headless:true});
   try {
     const page=await browser.newPage({viewport:{width:1440,height:1000}});
     const errors=[], external=[];
@@ -59,19 +60,23 @@ const server = http.createServer(async (req, res) => {
     assert.match(await page.locator('#reviewWorkspaceAudio').getAttribute('src'), /^blob:/, 'audio must comply with the launcher CSP');
     assert.equal(chatCalls,0,'opening a review must not call AI');
     await page.locator('#retryReviewSource').click();
+    await page.waitForURL('**/#speaking');
     assert.equal(await page.locator('#reviewWorkspace').isVisible(),false);
-    assert.equal(await page.locator('#speakingTranscript').inputValue(),'I like cycling.');
+    assert.equal(await page.locator('#speakingTranscript').inputValue(),'');
+    const retryId = data.speaking.find(item => item.parentSessionId === 's1').id;
+    await page.locator('#speakingTranscript').fill('I like cycling.');
     assert.equal(await page.locator('#speakingReview').isVisible(),false,'editor must not display the old report');
     await page.locator('#reviewSpeaking').click();
-    await page.waitForURL('**/#review/speaking/s1');
+    await page.waitForURL(`**/#review/speaking/${retryId}`);
     await page.waitForTimeout(100);
     assert.equal(data.speaking[0].review,markdown,'persist the original Markdown');
-    assert.equal(data.speaking[0].reviewInput.original,'I like cycling.');
+    assert.equal(data.speaking.find(item => item.id === retryId).reviewInput.original,'I like cycling.');
     assert.equal(await page.locator('#reviewWorkspace').isVisible(),true,'finished feedback opens the dedicated report');
     await page.locator('#closeReviewWorkspace').click();
     assert.equal(await page.locator('#speakingOverviewView').isVisible(),true,'closing a report returns to the speaking overview');
     await page.locator('[data-speaking-id="s1"]').click();
     await page.locator('#retryReviewSource').click();
+    await page.waitForURL('**/#speaking');
     await page.locator('#speakingTranscript').fill('A later edit.');
     await page.locator('[data-speaking-id="s1"]').click();
     assert.equal(await page.locator('#reviewWorkspaceOriginal').textContent(),'I like cycling.');
@@ -197,6 +202,7 @@ const server = http.createServer(async (req, res) => {
     await page.locator('[data-writing-id="w1"]').click();
     await checkMarkdown('#reviewOverviewSummary');
     await page.reload();
+    await page.locator('#reviewWorkspace').waitFor({state:'visible'});
     assert.equal(await page.locator('#reviewWorkspace').isVisible(),true,'direct report route must restore on reload');
     assert.equal(await page.locator('#reviewWorkspaceOriginal').textContent(),'Original essay');
     const legacySpeaking = await page.evaluate(() => {
@@ -236,6 +242,7 @@ const server = http.createServer(async (req, res) => {
     delete data.speaking[0].punctuationSource;
     await page.goto(`http://127.0.0.1:${server.address().port}/#review/speaking/s1`);
     await page.reload();
+    await page.waitForFunction(()=>document.querySelector('#reviewRawTranscript')?.textContent==='I like cycling.');
     assert.equal(await page.locator('#reviewRawTranscript').textContent(),'I like cycling.');
     assert.equal(await page.locator('#reviewRawTranscript mark').count(),0);
     punctuationResponse = 'I enjoy cycling.';
@@ -246,8 +253,10 @@ const server = http.createServer(async (req, res) => {
     await page.locator('#generatePunctuation').click();
     await page.waitForFunction(()=>document.querySelector('#generatePunctuation').classList.contains('hidden'));
     await page.reload();
+    await page.waitForFunction(()=>document.querySelector('#reviewWorkspaceOriginal').textContent==='I like cycling.');
     assert.equal(await page.locator('#reviewWorkspaceOriginal').textContent(),'I like cycling.');
-    assert.equal(data.speaking[0].transcript,'A later edit.','edited practice text must autosave while the report keeps its submitted snapshot');
+    assert.equal(data.speaking[0].transcript,'I like cycling.','retry must preserve the original answer');
+    assert.ok(data.speaking.some(item=>item.parentSessionId==='s1' && item.transcript==='A later edit.'),'edited retry must autosave independently');
     assert.equal(data.speaking[0].punctuatedTranscript,'I like cycling.');
     await page.locator('#menuButton').click();
     await page.locator('.nav-item[data-route="writing"]').click();

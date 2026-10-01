@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "title": "第一次练习 · 社区图书馆",
+  "source": {"name": "English Learning Path 原创入门热身", "status": "generated"},
+  "units": [{
+    "id": "beginner-library-reading",
+    "skill": "reading",
+    "part": "academic",
+    "title": "社区图书馆 · 3 题阅读热身",
+    "prompt": "先读左侧短文，再回答 3 道题。完成后核对答案，点击原文依据寻找理由。这是原创入门热身，不是雅思真题，也不用于估分。不限完成速度。",
+    "minutes": 3,
+    "passages": [
+      {"id": "A", "text": "Willow Library is open from Monday to Saturday. It opens at nine in the morning. Students can use the computers for free. The quiet study room is on the second floor."},
+      {"id": "B", "text": "To borrow a book, visitors need a library card. They can keep each book for two weeks. On Saturday mornings, the library holds a reading club. New members are welcome."}
+    ],
+    "groups": [
+      {"id": "words", "kind": "text", "instruction": "第 1–2 题：从原文找出一个英文单词填空。ONE WORD ONLY.", "maxWords": 1,
+        "questions": [
+          {"id": "floor", "label": "1", "text": "The quiet study room is on the ______ floor.", "answers": ["second"], "evidence": "A", "explanation": "原文直接说明自习室在二楼。只填 second，不需要重复 floor。"},
+          {"id": "card", "label": "2", "text": "Visitors need a library ______ to borrow books.", "answers": ["card"], "evidence": "B", "explanation": "borrow books 对应原文的 borrow a book；借书需要 library card。"}
+        ]},
+      {"id": "judgement", "kind": "single", "instruction": "第 3 题：判断这句话是否与原文一致。TRUE 表示一致，FALSE 表示相反。",
+        "options": [{"id": "TRUE", "text": "TRUE · 与原文一致"}, {"id": "FALSE", "text": "FALSE · 与原文相反"}],
+        "questions": [{"id": "computers", "label": "3", "text": "Students must pay to use the computers.", "answers": ["FALSE"], "evidence": "A", "explanation": "for free 表示免费，与 must pay（必须付费）相反，所以选 FALSE。"}]
+      }
+    ]
+  }]
+}

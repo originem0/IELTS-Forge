@@ -1,5 +1,6 @@
+const applyStateRequest = require('./state-api-fixture.cjs');
 // Synthetic records and local mock API only; never contacts an AI provider.
-const { chromium } = require('playwright');
+const { chromium } = require(process.env.ELP_PLAYWRIGHT_MODULE || 'playwright');
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -19,10 +20,10 @@ const server = http.createServer(async (req, res) => {
   if (req.url.startsWith('/api/')) {
     res.setHeader('Content-Type','application/json');
     if (req.url === '/api/data') {
-      if (req.method === 'PUT') {
+      if (['PUT','PATCH'].includes(req.method)) {
         let body=''; for await (const chunk of req) body += chunk;
         if (failWrites) { res.statusCode=503; return res.end(JSON.stringify({error:'Synthetic disk failure'})); }
-        data=JSON.parse(body).data;
+        data=applyStateRequest(data,JSON.parse(body),req.method);
       }
       return res.end(JSON.stringify({data,storage:{bound:true,ready:true}}));
     }
@@ -39,7 +40,7 @@ const server = http.createServer(async (req, res) => {
 });
 (async () => {
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
-  const browser=await chromium.launch({channel:'chrome',headless:true});
+  const browser=await chromium.launch({...(process.env.ELP_BROWSER_CHANNEL === 'bundled' ? {} : {channel:'chrome'}),headless:true});
   try {
     const page=await browser.newPage({viewport:{width:1440,height:1000}});
     const errors=[], external=[];

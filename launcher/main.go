@@ -16,7 +16,6 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,17 +30,17 @@ const (
 	backupName      = "EnglishLearnPath-data.backup.json"
 	configDirname   = "runtime-data"
 	dailyBackupKeep = 30
-
-	// deepSeekVisionModel is DeepSeek's image-capable model. Provider model names
-	// drift over time; if DeepSeek renames it, update image reviews here.
-	deepSeekVisionModel = "deepseek-v4-flash-vision-exp"
 )
 
 type aiConfig struct {
-	BaseURL   string `json:"baseUrl"`
-	APIKey    string `json:"apiKey"`
-	Model     string `json:"model"`
-	Connected bool   `json:"connected"`
+	BaseURL        string      `json:"baseUrl"`
+	APIKey         string      `json:"apiKey"`
+	Model          string      `json:"model"`
+	Protocol       string      `json:"protocol,omitempty"`
+	Provider       string      `json:"provider,omitempty"`
+	VisionVerified bool        `json:"visionVerified,omitempty"`
+	Connected      bool        `json:"connected"`
+	Vision         *aiEndpoint `json:"vision,omitempty"`
 }
 
 type configStore struct {
@@ -65,9 +64,13 @@ type launcherConfig struct {
 
 type diskStore struct {
 	sync.RWMutex
-	directory  string
-	configPath string
-	lastWrite  string
+	directory       string
+	configPath      string
+	lastWrite       string
+	strictDirectory bool
+	directoryLock   *os.File
+	libraryIndex    *libraryReadIndex
+	studyWrites     int
 }
 
 type chatMessage struct {
@@ -116,6 +119,7 @@ func main() {
 		writeStartupError(fmt.Errorf("无法初始化永久数据目录：%w", err))
 		return
 	}
+	defer disk.close()
 	settings.path = filepath.Join(filepath.Dir(disk.configPath), credentialFilename)
 	settings.restore()
 
@@ -145,10 +149,13 @@ func main() {
 	}
 	httpServer = server
 
-	go func() {
-		time.Sleep(350 * time.Millisecond)
-		_ = openBrowser(appURL)
-	}()
+	// Packaged smoke tests use an isolated browser without opening the user's tabs.
+	if os.Getenv("ENGLISH_LEARN_PATH_NO_BROWSER") != "1" {
+		go func() {
+			time.Sleep(350 * time.Millisecond)
+			_ = openBrowser(appURL)
+		}()
+	}
 
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		writeStartupError(fmt.Errorf("本地服务意外停止：%w", err))
@@ -171,6 +178,8 @@ func beginShutdown() {
 }
 
 func registerAPI(mux *http.ServeMux) {
+	registerStudyAPI(mux)
+	registerLibraryAPI(mux)
 	mux.HandleFunc("GET /api/app/info", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": "English Learning Path", "version": appVersion, "local": true})
 	})
@@ -188,6 +197,9 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/data/open-directory", handleDataOpenDirectory)
 	mux.HandleFunc("GET /api/ai/status", handleAIStatus)
 	mux.HandleFunc("POST /api/ai/config", handleAIConfig)
+	mux.HandleFunc("POST /api/ai/models", handleAIModels)
+	mux.HandleFunc("POST /api/ai/vision/config", handleVisionConfig)
+	mux.HandleFunc("POST /api/ai/vision/disconnect", handleVisionDisconnect)
 	mux.HandleFunc("POST /api/ai/disconnect", handleAIDisconnect)
 	mux.HandleFunc("POST /api/ai/chat", handleAIChat)
 	mux.HandleFunc("GET /api/transcription/status", handleTranscriptionStatus)
@@ -199,12 +211,12 @@ func handleDataStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func handleDataLoad(w http.ResponseWriter, _ *http.Request) {
-	data, err := disk.load()
+	result, err := disk.snapshot()
 	if err != nil {
 		logAndError(w, http.StatusInternalServerError, "读取本地数据失败，请检查数据文件夹权限或数据文件是否完整", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": data, "storage": disk.status()})
+	writeJSON(w, http.StatusOK, result)
 }
 
 func handleDataSave(w http.ResponseWriter, r *http.Request) {
@@ -217,11 +229,20 @@ func handleDataSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "学习数据格式无效")
 		return
 	}
-	if err := disk.save(payload.Data); err != nil {
+	result, err := disk.saveConditional(payload.Data, r.Header.Get("X-ELP-Directory"), r.Header.Get("If-Match"))
+	if err != nil {
+		if errors.Is(err, errDirectoryChanged) || errors.Is(err, errDataConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, errRevisionRequired) {
+			writeError(w, http.StatusPreconditionRequired, err.Error())
+			return
+		}
 		logAndError(w, http.StatusInternalServerError, "写入本地文件失败，请检查数据文件夹权限", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"saved": true, "storage": disk.status()})
+	writeJSON(w, http.StatusOK, result)
 }
 
 func handleDataSelectDirectory(w http.ResponseWriter, _ *http.Request) {
@@ -239,17 +260,13 @@ func handleDataSelectDirectory(w http.ResponseWriter, _ *http.Request) {
 		logAndError(w, http.StatusInternalServerError, "绑定数据文件夹失败，请检查该文件夹权限，或所选文件夹中的数据文件是否有效", err)
 		return
 	}
-	data, err := disk.load()
+	result, err := disk.snapshot()
 	if err != nil {
 		logAndError(w, http.StatusInternalServerError, "读取新数据文件夹失败，请检查该文件夹权限", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"canceled":       false,
-		"loadedExisting": loadedExisting,
-		"data":           data,
-		"storage":        disk.status(),
-	})
+	result["canceled"], result["loadedExisting"] = false, loadedExisting
+	writeJSON(w, http.StatusOK, result)
 }
 
 func handleDataOpenDirectory(w http.ResponseWriter, _ *http.Request) {
@@ -262,8 +279,6 @@ func handleDataOpenDirectory(w http.ResponseWriter, _ *http.Request) {
 	switch runtime.GOOS {
 	case "windows":
 		command = exec.Command("explorer.exe", directory)
-	case "darwin":
-		command = exec.Command("open", directory)
 	default:
 		writeError(w, http.StatusNotImplemented, "当前系统暂不支持从程序打开文件夹")
 		return
@@ -279,7 +294,7 @@ func handleAIStatus(w http.ResponseWriter, _ *http.Request) {
 	settings.RLock()
 	defer settings.RUnlock()
 	cfg := settings.value
-	writeJSON(w, http.StatusOK, map[string]any{"connected": cfg.Connected, "model": cfg.Model, "baseUrl": cfg.BaseURL, "saved": settings.saved, "restored": settings.restored, "storageError": settings.loadError})
+	writeJSON(w, http.StatusOK, map[string]any{"connected": cfg.Connected, "model": cfg.Model, "baseUrl": cfg.BaseURL, "protocol": protocolOf(cfg), "provider": cfg.Provider, "visionVerified": cfg.VisionVerified, "vision": publicVision(cfg.Vision), "saved": settings.saved, "restored": settings.restored, "storageError": settings.loadError})
 }
 
 func handleAIConfig(w http.ResponseWriter, r *http.Request) {
@@ -290,9 +305,11 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	proposed.BaseURL = strings.TrimRight(strings.TrimSpace(proposed.BaseURL), "/")
 	proposed.Model = strings.TrimSpace(proposed.Model)
+	proposed.Protocol = protocolOf(proposed)
+	proposed.Vision = nil // The independent image form owns its credentials.
 	// Blank fields can reuse a saved key only for the exact same endpoint.
 	settings.RLock()
-	if proposed.APIKey == "" && proposed.BaseURL == settings.value.BaseURL {
+	if proposed.APIKey == "" && sameAIEndpoint(proposed, settings.value) {
 		proposed.APIKey = settings.value.APIKey
 	}
 	settings.RUnlock()
@@ -305,13 +322,23 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 		{Role: "system", Content: "Reply with exactly: CONNECTED"},
 		{Role: "user", Content: "Connection test"},
 	}
-	if _, err := callChat(r.Context(), proposed, testMessages, 0, 256, true); err != nil {
+	probeTokens := 256
+	if protocolOf(proposed) != "openai" {
+		probeTokens = 4096
+	}
+	if base, _ := url.Parse(proposed.BaseURL); base != nil && base.Hostname() == "api.openai.com" {
+		probeTokens = 4096
+	}
+	if _, err := callChat(r.Context(), proposed, testMessages, 0, probeTokens, true); err != nil {
 		writeError(w, http.StatusBadGateway, "模型连接测试失败："+err.Error())
 		return
 	}
 	proposed.Connected = true
 	settings.Lock()
 	defer settings.Unlock()
+	// Verification belongs to the tested endpoint, key and model, never client input.
+	proposed.VisionVerified = settings.value.VisionVerified && sameAIModel(proposed, settings.value)
+	proposed.Vision = settings.value.Vision
 	if err := settings.persist(proposed); err != nil {
 		writeError(w, http.StatusInternalServerError, "连接测试成功，但无法加密保存到本地，请检查程序目录写入权限")
 		return
@@ -324,6 +351,17 @@ func handleAIConfig(w http.ResponseWriter, r *http.Request) {
 func handleAIDisconnect(w http.ResponseWriter, _ *http.Request) {
 	settings.Lock()
 	defer settings.Unlock()
+	if settings.value.Vision != nil && settings.value.Vision.Connected {
+		remaining := aiConfig{Vision: settings.value.Vision}
+		if err := settings.persist(remaining); err != nil {
+			writeError(w, http.StatusInternalServerError, "无法删除文字接口配置")
+			return
+		}
+		settings.value = remaining
+		settings.restored, settings.loadError = false, ""
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
 	if settings.path != "" {
 		if err := os.Remove(settings.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			writeError(w, http.StatusInternalServerError, "无法删除本地保存的接口配置，请检查文件权限")
@@ -361,17 +399,18 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	settings.RLock()
 	cfg := settings.value
 	settings.RUnlock()
+	independentImage := hasImages && cfg.Vision != nil && cfg.Vision.Connected
+	if independentImage {
+		cfg = cfg.Vision.config()
+	}
 	if !cfg.Connected {
 		writeError(w, http.StatusPreconditionFailed, "请先在设置页配置并测试 AI")
 		return
 	}
 	if hasImages {
-		base, _ := url.Parse(cfg.BaseURL)
-		if base != nil && strings.EqualFold(base.Hostname(), "api.deepseek.com") {
-			// DeepSeek accepts image content only on its dedicated vision model.
-			// Switch just this request so saved text-model settings and keys keep
-			// working for ordinary feedback.
-			cfg.Model = deepSeekVisionModel
+		if err := ensureVision(r.Context(), cfg, independentImage); err != nil {
+			writeError(w, http.StatusBadGateway, imageRouteError(cfg, independentImage, err).Error())
+			return
 		}
 	}
 	maxTokens := input.MaxTokens
@@ -380,6 +419,9 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	content, err := callChat(r.Context(), cfg, input.Messages, input.Temperature, maxTokens, false)
 	if err != nil {
+		if hasImages {
+			err = imageRouteError(cfg, independentImage, err)
+		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -517,16 +559,22 @@ func validImageURL(value string) bool {
 }
 
 func callChat(ctx context.Context, cfg aiConfig, messages []chatMessage, temperature float64, maxTokens int, connectionTest bool) (string, error) {
+	if protocolOf(cfg) != "openai" {
+		return callNativeChat(ctx, cfg, messages, temperature, maxTokens)
+	}
 	payload := map[string]any{
-		"model":       cfg.Model,
-		"messages":    messages,
-		"temperature": temperature,
-		"max_tokens":  maxTokens,
+		"model":      cfg.Model,
+		"messages":   messages,
+		"max_tokens": maxTokens,
 	}
 	// DeepSeek V4 defaults to thinking mode. This text-feedback app uses chat
 	// mode for both probes and reviews so the output budget reaches the answer.
 	// Never send this provider-specific option to unrelated services.
 	base, _ := url.Parse(cfg.BaseURL)
+	if base != nil && strings.EqualFold(base.Hostname(), "api.openai.com") {
+		delete(payload, "max_tokens")
+		payload["max_completion_tokens"] = maxTokens
+	}
 	if base != nil && strings.EqualFold(base.Hostname(), "api.deepseek.com") && strings.HasPrefix(strings.ToLower(cfg.Model), "deepseek-v4-") {
 		payload["thinking"] = map[string]string{"type": "disabled"}
 	}
@@ -534,7 +582,7 @@ func callChat(ctx context.Context, cfg aiConfig, messages []chatMessage, tempera
 	if err != nil {
 		return "", err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+"/chat/completions", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, aiURL(cfg, "chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -542,7 +590,7 @@ func callChat(ctx context.Context, cfg aiConfig, messages []chatMessage, tempera
 	if cfg.APIKey != "" {
 		request.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	}
-	response, err := client.Do(request)
+	response, err := doAIRequest(request)
 	if err != nil {
 		return "", err
 	}
@@ -557,7 +605,7 @@ func callChat(ctx context.Context, cfg aiConfig, messages []chatMessage, tempera
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if parsed.Error != nil && parsed.Error.Message != "" {
-			return "", fmt.Errorf("%s", parsed.Error.Message)
+			return "", errors.New(redactAIError(parsed.Error.Message, cfg))
 		}
 		return "", fmt.Errorf("模型服务返回 HTTP %d", response.StatusCode)
 	}
@@ -600,272 +648,10 @@ func validateConfig(cfg aiConfig) error {
 	if cfg.BaseURL == "" || cfg.Model == "" {
 		return errors.New("请填写接口地址和模型名称")
 	}
-	if len(cfg.BaseURL) > 2048 || len(cfg.APIKey) > 8192 || len(cfg.Model) > 200 {
+	if len(cfg.Model) > 200 {
 		return errors.New("配置内容过长")
 	}
-	parsed, err := url.Parse(cfg.BaseURL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return errors.New("接口地址必须是有效的 http 或 https 地址")
-	}
-	return nil
-}
-
-func newDiskStore() (*diskStore, error) {
-	var configRoot string
-	if override := strings.TrimSpace(os.Getenv("ENGLISH_LEARN_PATH_CONFIG_DIR")); override != "" {
-		configRoot = override
-	} else if runtime.GOOS == "darwin" {
-		userConfigRoot, err := os.UserConfigDir()
-		if err != nil {
-			return nil, fmt.Errorf("无法定位 macOS 应用配置目录：%w", err)
-		}
-		configRoot = filepath.Join(userConfigRoot, "EnglishLearnPath")
-	} else {
-		executable, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("无法定位启动器目录：%w", err)
-		}
-		configRoot = filepath.Join(filepath.Dir(executable), configDirname)
-	}
-	if err := os.MkdirAll(configRoot, 0700); err != nil {
-		return nil, fmt.Errorf("无法创建便携配置目录 %s：%w", configRoot, err)
-	}
-
-	store := &diskStore{
-		configPath: filepath.Join(configRoot, "config.json"),
-	}
-	if raw, readErr := os.ReadFile(store.configPath); readErr == nil {
-		var saved launcherConfig
-		if json.Unmarshal(raw, &saved) == nil && filepath.IsAbs(saved.DataDirectory) {
-			candidate := filepath.Clean(saved.DataDirectory)
-			// Never recreate a stale absolute path copied from another computer.
-			// A missing directory means this portable copy starts unbound and asks
-			// the current user to choose a local folder again.
-			if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
-				store.directory = candidate
-			}
-		}
-	}
-	if store.directory != "" {
-		if info, statErr := os.Stat(store.dataPathLocked()); statErr == nil {
-			store.lastWrite = info.ModTime().Format(time.RFC3339)
-		}
-	}
-	return store, nil
-}
-
-func (s *diskStore) directoryPath() string {
-	s.RLock()
-	defer s.RUnlock()
-	return s.directory
-}
-
-func (s *diskStore) dataPathLocked() string {
-	if s.directory == "" {
-		return ""
-	}
-	return filepath.Join(s.directory, dataFilename)
-}
-
-func (s *diskStore) backupPathLocked() string {
-	if s.directory == "" {
-		return ""
-	}
-	return filepath.Join(s.directory, backupName)
-}
-
-func (s *diskStore) status() map[string]any {
-	s.RLock()
-	defer s.RUnlock()
-	dataPath := s.dataPathLocked()
-	bound := s.directory != ""
-	fileExists := false
-	if bound {
-		_, statErr := os.Stat(dataPath)
-		fileExists = statErr == nil
-	}
-	return map[string]any{
-		"ready":          bound,
-		"bound":          bound,
-		"directory":      s.directory,
-		"dataFile":       dataPath,
-		"fileExists":     fileExists,
-		"lastWriteAt":    s.lastWrite,
-		"browserStorage": false,
-	}
-}
-
-func (s *diskStore) load() (json.RawMessage, error) {
-	s.RLock()
-	defer s.RUnlock()
-	if s.directory == "" {
-		return json.RawMessage(`{}`), nil
-	}
-	return loadDataFromPath(s.dataPathLocked(), s.backupPathLocked())
-}
-
-func loadDataFromPath(dataPath, fallbackPath string) (json.RawMessage, error) {
-	raw, err := os.ReadFile(dataPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return json.RawMessage(`{}`), nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	data, parseErr := decodeDiskEnvelope(raw)
-	if parseErr == nil {
-		return data, nil
-	}
-	backup, backupErr := os.ReadFile(fallbackPath)
-	if backupErr != nil {
-		return nil, fmt.Errorf("主数据文件损坏，且无法读取备份：%w", parseErr)
-	}
-	data, backupParseErr := decodeDiskEnvelope(backup)
-	if backupParseErr != nil {
-		return nil, fmt.Errorf("主数据文件与备份均无法解析：%w", parseErr)
-	}
-	return data, nil
-}
-
-func decodeDiskEnvelope(raw []byte) (json.RawMessage, error) {
-	var envelope diskDataEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, err
-	}
-	if len(envelope.Data) == 0 || !json.Valid(envelope.Data) {
-		return nil, errors.New("数据文件缺少有效的 data 字段")
-	}
-	return envelope.Data, nil
-}
-
-func (s *diskStore) save(data json.RawMessage) error {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil || object == nil {
-		return errors.New("学习数据必须是 JSON 对象")
-	}
-	s.Lock()
-	defer s.Unlock()
-	if s.directory == "" {
-		return errors.New("请先选择或创建永久数据文件夹")
-	}
-	return s.writeLocked(data)
-}
-
-func (s *diskStore) writeLocked(data json.RawMessage) error {
-	if err := os.MkdirAll(s.directory, 0700); err != nil {
-		return err
-	}
-	dataPath := s.dataPathLocked()
-	backupPath := s.backupPathLocked()
-	previous, previousErr := os.ReadFile(dataPath)
-	if previousErr == nil && json.Valid(previous) {
-		if err := os.WriteFile(backupPath, previous, 0600); err != nil {
-			return fmt.Errorf("创建滚动备份失败：%w", err)
-		}
-		backupsDir := filepath.Join(s.directory, "backups")
-		if err := os.MkdirAll(backupsDir, 0700); err == nil {
-			dailyPath := filepath.Join(backupsDir, "EnglishLearnPath-data-"+time.Now().Format("2006-01-02")+".json")
-			if _, err := os.Stat(dailyPath); errors.Is(err, os.ErrNotExist) {
-				_ = os.WriteFile(dailyPath, previous, 0600)
-			}
-			pruneDailyBackups(backupsDir, dailyBackupKeep)
-		}
-	}
-
-	envelope := diskDataEnvelope{Version: 1, UpdatedAt: time.Now().Format(time.RFC3339), Data: data}
-	encoded, err := json.MarshalIndent(envelope, "", "  ")
-	if err != nil {
-		return err
-	}
-	temporaryPath := dataPath + ".tmp"
-	if err := os.WriteFile(temporaryPath, encoded, 0600); err != nil {
-		return err
-	}
-	// os.Rename atomically replaces an existing file on both Windows (MoveFileEx
-	// with MOVEFILE_REPLACE_EXISTING) and Unix, so there is never a window where
-	// the primary data file is missing. Do not unlink it first.
-	if err := os.Rename(temporaryPath, dataPath); err != nil {
-		_ = os.Remove(temporaryPath)
-		if previousErr == nil {
-			_ = os.WriteFile(dataPath, previous, 0600)
-		}
-		return err
-	}
-	s.lastWrite = envelope.UpdatedAt
-	return nil
-}
-
-// pruneDailyBackups keeps only the newest keep daily snapshots so the backups
-// directory cannot grow without bound over months of use. The yyyy-mm-dd file
-// names sort chronologically, so the oldest names are simply the smallest.
-func pruneDailyBackups(dir string, keep int) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	var daily []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if !entry.IsDir() && strings.HasPrefix(name, "EnglishLearnPath-data-") && strings.HasSuffix(name, ".json") {
-			daily = append(daily, name)
-		}
-	}
-	if len(daily) <= keep {
-		return
-	}
-	sort.Strings(daily)
-	for _, name := range daily[:len(daily)-keep] {
-		_ = os.Remove(filepath.Join(dir, name))
-	}
-}
-
-func (s *diskStore) switchDirectory(selected string) (bool, error) {
-	absolute, err := filepath.Abs(strings.TrimSpace(selected))
-	if err != nil || !filepath.IsAbs(absolute) {
-		return false, errors.New("选择的目录无效")
-	}
-	if err := os.MkdirAll(absolute, 0700); err != nil {
-		return false, err
-	}
-
-	current, err := s.load()
-	if err != nil {
-		return false, err
-	}
-	targetPath := filepath.Join(absolute, dataFilename)
-	_, statErr := os.Stat(targetPath)
-	loadedExisting := statErr == nil
-	if loadedExisting {
-		if _, err := loadDataFromPath(targetPath, filepath.Join(absolute, backupName)); err != nil {
-			return false, fmt.Errorf("所选目录中的数据文件无效：%w", err)
-		}
-	}
-
-	s.Lock()
-	defer s.Unlock()
-	previousDirectory := s.directory
-	s.directory = absolute
-	if !loadedExisting {
-		if err := s.writeLocked(current); err != nil {
-			s.directory = previousDirectory
-			return false, err
-		}
-	} else if info, err := os.Stat(s.dataPathLocked()); err == nil {
-		s.lastWrite = info.ModTime().Format(time.RFC3339)
-	}
-	if err := s.persistConfigLocked(); err != nil {
-		s.directory = previousDirectory
-		return false, err
-	}
-	return loadedExisting, nil
-}
-
-func (s *diskStore) persistConfigLocked() error {
-	payload, err := json.MarshalIndent(launcherConfig{DataDirectory: s.directory}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.configPath, payload, 0600)
+	return validateAIEndpoint(cfg)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
@@ -954,9 +740,6 @@ func findResourceDir(name string) (string, error) {
 	if executable, err := os.Executable(); err == nil {
 		executableDir := filepath.Dir(executable)
 		candidates = append(candidates, filepath.Join(executableDir, name))
-		if runtime.GOOS == "darwin" {
-			candidates = append(candidates, filepath.Join(executableDir, "..", "Resources", name))
-		}
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		candidates = append(candidates, filepath.Join(cwd, name), filepath.Join(cwd, "..", name))
@@ -977,8 +760,6 @@ func openBrowser(target string) error {
 	switch runtime.GOOS {
 	case "windows":
 		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
-	case "darwin":
-		command = exec.Command("open", target)
 	default:
 		command = exec.Command("xdg-open", target)
 	}

@@ -1,0 +1,71 @@
+const assert=require('node:assert/strict');
+module.exports=async function storageUI(page,base){
+  await page.goto(`${base}/#writing`);
+  await page.locator('#writingOverviewView').waitFor({state:'visible'});
+  await page.locator('#newWriting').click();
+  let release,started;
+  const hold=new Promise(resolve=>{release=resolve});
+  const began=new Promise(resolve=>{started=resolve});
+  await page.route('**/api/data',async route=>{
+    if(route.request().method()==='PATCH'){started();await hold;}
+    await route.continue();
+  });
+  await page.locator('#writingPrompt').fill('Autosave lifecycle test.');
+  await began;
+  await page.locator('.nav-item[data-route="settings"]').click();
+  assert.equal(await page.locator('[data-page="writing"]').evaluate(node=>node.classList.contains('is-active')),true,'navigation abandoned a pending write');
+  release();
+  await page.locator('[data-page="settings"].is-active').waitFor();
+  await page.unroute('**/api/data');
+  await page.locator('.nav-item[data-route="writing"]').click();
+  await page.locator('#writingOverviewView').waitFor({state:'visible'});
+  await page.locator('#newWriting').click();
+  await page.route('**/api/data',route=>route.request().method()==='PATCH'?route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Synthetic write failure'})}):route.continue());
+  await page.locator('#writingPrompt').fill('Must retain this unsaved draft.');
+  await page.locator('#storageStatusBadge').filter({hasText:'数据写入失败'}).waitFor();
+  await page.locator('.nav-item[data-route="settings"]').click();
+  await page.locator('#toast').filter({hasText:'当前练习尚未保存'}).waitFor();
+  assert.equal(await page.locator('#writingPrompt').inputValue(),'Must retain this unsaved draft.');
+  await page.unroute('**/api/data');
+  await page.locator('.nav-item[data-route="settings"]').click();
+  await page.locator('[data-page="settings"].is-active').waitFor();
+  const result=await page.evaluate(async()=>{
+    const loaded=await(await fetch('/api/data')).json();
+    const send=value=>fetch('/api/data',{method:'PATCH',headers:{'Content-Type':'application/json','If-Match':loaded.revision,'X-ELP-Directory':loaded.storage.directoryId},body:JSON.stringify({metadata:{concurrencyFixture:value},collections:{}})});
+    return (await Promise.all([send('one'),send('two')])).map(response=>response.status).sort();
+  });
+  assert.deepEqual(result,[200,409],'concurrent same-version tabs both overwrote the archive');
+  await page.reload();
+  await page.locator('[data-page="settings"].is-active').waitFor();
+  const before=await page.evaluate(async()=>(await(await fetch('/api/data')).json()).data);
+  await page.locator('#importData').setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({version:1,data:{writings:[null],speaking:[]}}))});
+  await page.locator('#toast').filter({hasText:'备份字段无效'}).waitFor();
+  const after=await page.evaluate(async()=>(await(await fetch('/api/data')).json()).data);
+  assert.deepEqual(after,before,'invalid backup changed the active archive');
+  page.once('dialog',dialog=>dialog.accept());
+  await page.route('**/api/data',route=>route.request().method()==='PUT'?route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Synthetic import failure'})}):route.continue());
+  await page.locator('#importData').setInputFiles({name:'valid.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({version:1,data:{writings:[{id:'replacement',essay:'Do not install this failed import.'}],speaking:[]}}))});
+  await page.locator('#toast').filter({hasText:'Synthetic import failure'}).waitFor();
+  await page.unroute('**/api/data');
+  await page.locator('#writeDataNow').click();
+  await page.locator('#storageResult').filter({hasText:'写入成功'}).waitFor();
+  assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/data')).json()).data),before,'failed import replaced in-memory data');
+  // A large bank must not create every question and its entire prompt in DOM.
+  await page.evaluate(async()=>{
+    const storage=(await(await fetch('/api/data')).json()).storage;
+    const pack={version:1,title:'Pagination fixture',source:{name:'Pagination fixture',status:'generated'},units:Array.from({length:150},(_,i)=>({id:`talk-${i}`,skill:'speaking',part:'p1',title:`Pagination ${i}`,prompt:`Long prompt ${i}. `.repeat(200),minutes:0}))};
+    const response=await fetch('/api/library/packs',{method:'POST',headers:{'Content-Type':'application/json','X-ELP-Directory':storage.directoryId},body:JSON.stringify(pack)});
+    if(!response.ok)throw new Error(await response.text());
+  });
+  await page.locator('.nav-item[data-route="speaking"]').click();
+  await page.locator('#newSpeaking').click();
+  await page.locator('#pickSpeakingQuestion').click();
+  await page.locator('#speakingQuestionPicker .question-picker-row').first().waitFor();
+  assert.equal(await page.locator('#speakingQuestionPicker .question-picker-row').count(),30);
+  assert.equal(await page.locator('#speakingQuestionPicker .question-picker-row p').count(),0,'unopened prompts were eagerly rendered');
+  await page.locator('#speakingQuestionPicker summary').first().click();
+  await page.locator('#speakingQuestionPicker .question-picker-row p').waitFor();
+  await page.getByRole('button',{name:'下一页',exact:true}).click();
+  assert.equal(await page.locator('#speakingQuestionPicker .question-picker-row').count(),30);
+  console.log('Storage/browser failures passed: pending navigation, dirty retry, CAS conflict, invalid import and bounded question rendering.');
+};

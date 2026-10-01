@@ -81,12 +81,12 @@ func TestDeepSeekReviewProducesFinalAnswerWithoutThinking(t *testing.T) {
 	}
 }
 
-func TestDeepSeekVisionRequestSwitchesModelAndPreservesImage(t *testing.T) {
+func TestSeparateVisionRequestUsesConfiguredModelAndPreservesImage(t *testing.T) {
 	previous := settings
-	settings = &configStore{value: aiConfig{BaseURL: "https://api.deepseek.com", APIKey: "synthetic", Model: "deepseek-v4-flash", Connected: true}}
+	settings = &configStore{value: aiConfig{BaseURL: "https://api.deepseek.com", APIKey: "synthetic", Model: "deepseek-v4-flash", Connected: true, Vision: &aiEndpoint{BaseURL: "https://image-relay.test/v1", APIKey: "image-key", Model: "image-choice", Connected: true, VisionVerified: true}}}
 	t.Cleanup(func() { settings = previous })
 	mockAI(t, `{"choices":[{"message":{"content":"image understood"},"finish_reason":"stop"}]}`, func(body map[string]any) {
-		if body["model"] != "deepseek-v4-flash-vision-exp" {
+		if body["model"] != "image-choice" {
 			t.Errorf("vision model was not selected: %v", body["model"])
 		}
 		messages := body["messages"].([]any)
@@ -115,7 +115,7 @@ func TestImagesAreRejectedOutsideUserMessages(t *testing.T) {
 
 func TestVisionRequestDoesNotRewriteOtherProviderModel(t *testing.T) {
 	previous := settings
-	settings = &configStore{value: aiConfig{BaseURL: "https://example.test/v1", APIKey: "synthetic", Model: "provider-vision-model", Connected: true}}
+	settings = &configStore{value: aiConfig{BaseURL: "https://example.test/v1", APIKey: "synthetic", Model: "provider-vision-model", Connected: true, VisionVerified: true}}
 	t.Cleanup(func() { settings = previous })
 	mockAI(t, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`, func(body map[string]any) {
 		if body["model"] != "provider-vision-model" {

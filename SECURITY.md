@@ -12,5 +12,5 @@ Never attach real API keys, private essays, recordings, purchased question-bank 
 
 ## Local security model
 
-The portable launcher binds only to `127.0.0.1`. API credentials are kept in process memory and are cleared when the launcher exits. They are not included in exported study-data backups.
+The Windows portable launcher binds only to `127.0.0.1`. Saved API credentials are encrypted with current-user Windows DPAPI in the private `runtime-data` directory and restored on startup. Disconnecting and deleting the saved configuration removes them. Credentials are excluded from exported study-data backups and distribution packages.
 

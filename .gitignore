@@ -6,6 +6,7 @@
 *.exe
 
 # Local/private data
+/question-banks/
 /userdata/*
 !/userdata/.gitkeep
 /runtime-data/
@@ -30,3 +31,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Python developer tools
+__pycache__/
+*.pyc

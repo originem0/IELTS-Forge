@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const html = await readFile(new URL("../app/index.html", import.meta.url), "utf8");
-const script = await readFile(new URL("../app/app.js", import.meta.url), "utf8");
+const script = (await Promise.all(["app.js","assessment.js","review-workspace.js"].map(name => readFile(new URL(`../app/${name}`, import.meta.url), "utf8")))).join("\n");
 const buildScript = await readFile(new URL("../build-portable.ps1", import.meta.url), "utf8");
 const stopper = await readFile(new URL("../launcher/cmd/stopper/main_windows.go", import.meta.url), "utf8");
 
@@ -23,7 +23,7 @@ assert.match(html, /id="writingPromptImageInput"/, "writing prompt image picker 
 assert.match(script, /promptImages:\s*\[\.\.\.pendingWritingPromptImages\]/, "writing prompt images must be saved with the record");
 assert.match(html, /data-mistake-filter="vocabulary"/, "vocabulary notebook filter is required");
 assert.match(html, /id="phasePlan"/, "exam-date phase plan container is required");
-assert.match(html, /id="heroPrimaryAction"[^>]*>配置学习计划</, "home primary action must be plan-driven rather than writing-only");
+assert.match(html, /id="heroPrimaryAction"[^>]*>开始第一次练习</, "new users can practice before configuring a plan");
 assert.doesNotMatch(html, /开始今日写作/, "home must not force writing as the first activity");
 assert.match(html, /id="recordButton"[^>]*>开始录音并转写</, "recording must visibly start transcription");
 assert.doesNotMatch(html, /id="browserTranscribe"/, "speaking must not expose a separate transcription button");
@@ -40,4 +40,6 @@ assert.match(stopper, /exec\.Command\("taskkill\.exe", "\/F", "\/IM", launcherIm
 
 console.log(`Static smoke test passed: ${ids.length} unique ids, ${new Set(selectors).size} referenced selectors.`);
 
-assert.doesNotMatch(html + script, /虾滑|ZYZ|data-route="(?:listening|reading)"|\/api\/resources/, "retired modules must not be exposed");
+assert.doesNotMatch(html + script, /虾滑|ZYZ|\/api\/resources/, "retired third-party resource adapters must not be exposed");
+assert.match(html, /data-route="reading"/, "local reading practice must be accessible");
+assert.match(html, /data-route="listening"/, "local listening practice must be accessible");
