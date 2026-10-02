@@ -7,6 +7,7 @@
   let playingAudio = null;
   let generation = 0;
   let session = null;
+  let explanationJob = null;
   const provenanceLabel = (...args) => window.ELPLibrary.provenanceLabel(...args);
   const kindNames = { text: "填空", single: "选择 / 判断", matching: "匹配", multiple: "多选" };
   const el = (tag, text, className) => {
@@ -246,14 +247,29 @@
     const history = el("section", undefined, "panel objective-library"); history.append(el("h3", "练习记录"));
     const controls = el("div", undefined, "button-row"); history.append(controls);
     const list = el("div"); history.append(list); root().append(history);
+    let selectedFilter = "all";
     const render = filter => {
+      selectedFilter = filter;
       list.replaceChildren();
       controls.querySelectorAll("button").forEach(node => node.setAttribute("aria-pressed", String(node.dataset.filter === filter)));
       const items = reading.filter(item => filter === "all" || (filter === "simulation" ? item.record.mode === "simulation" : item.record.status === filter)).sort((a, b) => b.record.updatedAt.localeCompare(a.record.updatedAt));
       for (const { record, unit } of items) {
-        const row = el("article", undefined, "objective-library-row"); const text = el("div");
+        const row = el("article", undefined, "objective-library-row objective-history-row"); const text = el("div");
         text.append(el("h4", unit.title), el("p", `${record.mode === "simulation" ? "整套模拟 · " : ""}${record.reviewOf ? "复习" : "首次作答"} · ${record.status === "draft" ? "未完成" : "已完成"} · ${clock(record.elapsedSeconds)} · ${new Date(record.updatedAt).toLocaleDateString()}`));
-        row.append(text, button(record.status === "draft" ? "继续作答" : "查看复盘", () => go(`${activeSkill}/${record.status === "draft" ? "session" : "report"}/${record.id}`))); list.append(row);
+        const remove = button("删除", async () => {
+          if (!confirm("确定删除这条练习记录吗？题目和其他练习记录会保留。")) return;
+          await api(`attempts/${record.id}`, { method: "DELETE", headers: { "If-Match": String(record.revision) } });
+          window.dispatchEvent(new CustomEvent("elp:practice-saved"));
+          if (token !== generation) return;
+          document.getElementById("objectiveError")?.remove();
+          reading.splice(reading.findIndex(item => item.record.id === record.id), 1);
+          count.children[0].textContent = `首次完成 ${reading.filter(item => item.record.status === "submitted" && !item.record.reviewOf && item.record.mode !== "simulation").length} ${activeSkill === "reading" ? "篇" : "段"}`;
+          count.children[1].textContent = `复习完成 ${reading.filter(item => item.record.status === "submitted" && item.record.reviewOf && item.record.mode !== "simulation").length} 次`;
+          count.children[2].textContent = `整套模拟 ${reading.filter(item => item.record.status === "submitted" && item.record.mode === "simulation").length} 次`;
+          render(selectedFilter);
+        }, "record-delete");
+        remove.setAttribute("aria-label", `删除练习记录：${unit.title}`);
+        row.append(text, button(record.status === "draft" ? "继续作答" : "查看复盘", () => go(`${activeSkill}/${record.status === "draft" ? "session" : "report"}/${record.id}`)), remove); list.append(row);
       }
       if (!items.length) list.append(el("p", "还没有这类练习记录。"));
     };
@@ -506,6 +522,47 @@
       const control = button(label, () => showItems(all), "button-secondary"); control.dataset.all = String(all); filters.append(control);
     }
     review.append(filters);
+    const selected = new Set();
+    const explanationTargets = new Map();
+    const renderExplanation = (target, item) => {
+      target.replaceChildren();
+      if (!item) return;
+      target.append(el("h4", "AI 错题讲解"), el("p", item.explanation), el("p", item.trap, "muted"));
+      for (const evidence of item.evidence || []) {
+        target.append(el("blockquote", evidence.quote));
+        target.append(button("定位这段原文", () => {
+          sourceDetails.open = true;
+          const source = evidence.source === "transcript" ? document.getElementById("listeningReviewTranscript") : document.getElementById(`passage-${evidence.source}`);
+          if (!source) return;
+          root().querySelectorAll(".is-evidence").forEach(node => node.classList.remove("is-evidence"));
+          source.classList.add("is-evidence"); source.scrollIntoView({ block: "center" }); source.focus({ preventScroll: true });
+          source.querySelector(".objective-return")?.remove();
+          source.append(button("返回这道错题", () => { target.scrollIntoView({ block: "center" }); target.focus(); }, "button-quiet objective-return"));
+        }, "button-quiet"));
+      }
+      target.append(el("small", "AI 讲解仅供复盘，标准答案与判分保持不变。"));
+    };
+    const explainStatus = el("p", "", "muted"); explainStatus.setAttribute("role", "status");
+    const explain = button("讲解所选错题", async () => {
+      if (explanationJob) return;
+      if (!selected.size) throw new Error("请先选择需要讲解的错题");
+      const ids = [...selected];
+      explainStatus.textContent = "正在生成并核对原文依据……";
+      const directory = window.ELPLibrary.directoryId;
+      explanationJob = api(`attempts/${id}/explanations`, { method: "POST", headers: { "Content-Type": "application/json", "X-ELP-Directory": directory }, body: JSON.stringify({ questions: ids }) });
+      try {
+        const saved = await explanationJob;
+        if (token !== generation) return;
+        record.explanations = saved;
+        for (const questionId of ids) renderExplanation(explanationTargets.get(questionId), saved[questionId]);
+        explainStatus.textContent = "讲解与原文依据已保存到本机。";
+      } catch (error) { if (token === generation) explainStatus.textContent = error.message; }
+      finally { explanationJob = null; }
+    }, "button-primary");
+    if (wrong.length) {
+      const toolbar = el("div", undefined, "objective-explain-tools");
+      toolbar.append(el("p", "勾选需要讲解的错题，每次最多 5 道。只调用文字 AI。", "muted"), explain, explainStatus); review.append(toolbar);
+    }
     const reason = { correct: "正确", incorrect: "答案不符", unanswered: "未作答", "word-limit": "超出答案格式限制" };
     for (const group of unit.groups) {
       const groupReview=el("section",undefined,"objective-group");groupReview.append(el("p",group.instruction,"objective-context"));
@@ -517,6 +574,18 @@
       const answerText = values => values?.length ? values.map(value => options.find(option => option.id === value)?.text || value).join(" / ") : "未作答";
       card.append(el("h4", `${q.label}. ${q.text}`), el("p", `${reason[result.reason]} · ${result.points}/${result.total}`), el("p", `我的答案：${answerText(record.answers[q.id])}`), el("p", `参考答案：${answerText(q.answers)}`));
       if (q.explanation) card.append(el("p", q.explanation, "objective-context"));
+      if (!result.correct) {
+        const label = el("label", undefined, "objective-explain-select");
+        const check = el("input"); check.type = "checkbox"; check.dataset.explainQuestion = q.id;
+        check.addEventListener("change", () => {
+          if (check.checked && selected.size >= 5) { check.checked = false; explainStatus.textContent = "每次最多选择 5 道错题。"; return; }
+          if (check.checked) selected.add(q.id); else selected.delete(q.id);
+          explain.textContent = selected.size ? `讲解所选 ${selected.size} 道错题` : "讲解所选错题";
+        });
+        label.append(check, el("span", `讲解第 ${q.label} 题`)); card.append(label);
+        const target = el("section", undefined, "objective-ai-explanation"); target.tabIndex = -1;
+        explanationTargets.set(q.id, target); renderExplanation(target, record.explanations?.[q.id]); card.append(target);
+      }
       if (q.evidence) {
         card.append(button("查看原文依据", () => {
           sourceDetails.open = true;
@@ -534,7 +603,7 @@
           const back = button(`返回第 ${q.label} 题`, () => { card.scrollIntoView({ block: "center" }); card.focus({ preventScroll: true }); }, "button-quiet"); back.classList.add("objective-return"); source.prepend(back);
           source.scrollIntoView({ block: "start", behavior: "smooth" }); source.focus({ preventScroll: true });
         }, "button-quiet"));
-      } else card.append(el("p", "这道题尚无经过核对的原文定位。", "muted"));
+      } else card.append(el("p", "题库未附人工标注的原文定位。", "muted"));
       groupReview.append(card);
       }
       review.append(groupReview);
@@ -587,6 +656,7 @@
     } catch (error) { if (token === generation) showError(error); }
   });
   window.addEventListener("elp:storage-changed", () => { generation++; playingAudio?.pause(); if (session) { clearInterval(session.interval); clearTimeout(session.debounce); } session = null; });
-  window.ELPObjective = Object.freeze({ start: startFromLibrary, flush: async () => { playingAudio?.pause(); if (session) await save(session); } });
+  window.ELPObjective = Object.freeze({ start: startFromLibrary, flush: async () => { if (explanationJob) throw new Error("请等待错题讲解保存完成"); playingAudio?.pause(); if (session) await save(session); } });
+  window.addEventListener("beforeunload", event => { if (explanationJob) { event.preventDefault(); event.returnValue = ""; } });
   window.addEventListener("beforeunload", event => { if (session && session.version !== session.savedVersion) { save(session).catch(() => {}); event.preventDefault(); event.returnValue = ""; } });
 })();

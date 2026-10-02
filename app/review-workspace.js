@@ -76,6 +76,13 @@
       comparison.append(link);
     }
     $("#reviewWorkspacePrompt").textContent = prompt || "尚未填写题目 / 话题";
+    document.getElementById("reviewChartEvidence")?.remove();
+    if (writing && typeof snapshot?.chartText === "string" && snapshot.chartText) {
+      const details = document.createElement("details"); details.id = "reviewChartEvidence";
+      const summary = document.createElement("summary"); summary.textContent = "本次批改采用的已核对图表信息";
+      const content = document.createElement("p"); content.className = "review-original"; content.textContent = snapshot.chartText;
+      details.append(summary, content); $("#reviewWorkspacePrompt").after(details);
+    }
     $("#reviewWorkspaceOriginal").textContent = original || "尚无原始回答";
     $("#reviewWorkspaceNotice").textContent = recoveredPrompt
       ? "这条旧记录没有单独保存原题，已从提交原稿中识别并补充到原题板块；提交原稿仍完整保留，不做删改。"

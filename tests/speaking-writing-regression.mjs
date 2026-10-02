@@ -24,7 +24,7 @@ function harness(initialState, localWhisper) {
       value: '', textContent: '', innerHTML: '', src: '', disabled: false,
       dataset: {}, events: {}, classList: { add() {}, remove() {}, toggle() {} },
       addEventListener(name, fn) { this.events[name] = fn; },
-      querySelectorAll() { return []; }, pause() {}, load() {}, focus() {},
+      querySelectorAll() { return []; }, pause() {}, load() {}, focus() {}, scrollIntoView() {},
       removeAttribute(name) { this[name] = ''; },
     });
     return elements.get(selector);
@@ -78,7 +78,7 @@ function harness(initialState, localWhisper) {
         chatRequests.push(request);
         const content = request.output_contract === 'personal-language-bank-json-v1'
           ? JSON.stringify({summary:'My bank',speaking:[{title:'Cycling',personalCore:'I enjoy cycling with friends.',reusableTopics:['hobbies'],expressions:['clear my mind'],answerFrames:['answer → reason → example']}],writing:[{domain:'education',collocations:['equal access｜平等的机会'],sentencePatterns:['It is important to...｜……十分重要']} ]})
-          : 'Synthetic feedback';
+          : request.messages[0].content.startsWith('只提取 IELTS') ? JSON.stringify({description:'2000 年为 10，2010 年为 20，单位为百分比。',uncertainties:'无'}) : 'Synthetic feedback';
         return { ok: true, json: async () => ({ content }) };
       }
       if (url === '/api/data' && ['PUT','PATCH'].includes(options?.method)) {
@@ -230,8 +230,15 @@ try {
   assert.equal(vision.chatRequests[0].messages[1].content[0].type, 'text');
   assert.equal(vision.chatRequests[0].messages[1].content[1].type, 'image_url');
   assert.equal(vision.chatRequests[0].messages[1].content[1].image_url.url, 'data:image/webp;base64,AAAA');
-  assert.match(vision.chatRequests[0].messages[1].content[0].text, /请先直接读取图片/);
-  assert.equal(vision.chatRequests[0].output_contract, 'review-markdown-v1-writing');
+  assert.equal(JSON.stringify(vision.chatRequests[0]).includes('The chart changes.'), false, 'extraction must not send essay');
+  assert.equal(vision.api.state.writings[0].review, '');
+  assert.ok(vision.persisted().writings[0].chartExtraction.text.includes('百分比'));
+  await vision.element('#confirmWritingChart').events.click();
+  assert.equal(vision.chatRequests.length, 2);
+  assert.equal(vision.chatRequests[1].output_contract, 'review-markdown-v1-writing');
+  assert.equal(vision.chatRequests[1].messages.every(message => typeof message.content === 'string'), true, 'confirmed review must use text connection');
+  assert.match(vision.chatRequests[1].messages.at(-1).content, /2000 年为 10/);
+  assert.ok(vision.persisted().writings[0].reviewInput.chartConfirmedAt);
   await h.api.generateLanguageBank();
   assert.equal(h.chatRequests.at(-1).output_contract, 'personal-language-bank-json-v1');
   assert.equal(h.api.state.languageBank.speaking[0].title, 'Cycling');

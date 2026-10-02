@@ -92,6 +92,14 @@
 .objective-library-row > div { min-width: 0; overflow-wrap: anywhere; }
 .objective-library-row h3, .objective-library-row h4 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 19px; font-weight: 500; }
 .objective-library-row .button { flex-shrink: 0; }
+.objective-history-row { position: relative; padding-right: 52px; }
+.objective-history-row .record-delete { min-height: 0; height: auto; padding: 5px; font-size: 12px; }
+.objective-explain-tools { margin: 18px 0; padding: 16px 0; border-block: 1px solid var(--line); }
+.objective-explain-select { display: flex; align-items: center; gap: 8px; margin: 16px 0; }
+.objective-explain-select input { width: auto; }
+.objective-ai-explanation:not(:empty) { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+.objective-ai-explanation blockquote { margin: 14px 0; border-left: 3px solid var(--accent); padding: 6px 16px; white-space: pre-wrap; }
+.objective-ai-explanation > small { display: block; margin-top: 12px; }
 .objective-summary { display: flex; gap: 24px; color: var(--muted, #69746d); }
 .objective-plan { padding: 24px 28px; }
 .objective-plan-task { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; }

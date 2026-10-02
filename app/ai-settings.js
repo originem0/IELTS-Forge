@@ -53,7 +53,7 @@
           if(data.vision && !forms.get("vision").touched) populate("vision",data.vision);
           const badge=node("vision","AiBadge");badge.textContent=data.vision?.connected ? "已连接" : "使用文字接口";badge.className=`status-badge ${data.vision?.connected?"status-on":"status-off"}`;
           const route=document.getElementById("imageRouteStatus"), independent=Boolean(data.vision?.connected), active=independent ? data.vision : data;
-          route.textContent=active.connected ? `带图题目使用${independent?"独立图片":"文字"}接口的 ${active.model}。${active.visionVerified?"识图测试已通过。":"首次带图批改会先测试识图；未通过则不会发送练习资料。"}` : "未配置独立图片接口时，带图题目使用文字接口所选的模型；该模型必须支持识图。";
+          route.textContent=active.connected ? `图表提取使用${independent?"独立图片":"文字"}接口的 ${active.model}。${active.visionVerified?"识图测试已通过。":"首次提取会先测试识图；未通过则不会发送练习资料。"}` : "未配置独立图片接口时，图表提取使用文字接口所选的模型；该模型必须支持识图。";
           if(data.storageError)message("ai",data.storageError,true);
           else if(data.restored) message("ai","已恢复本机加密配置。可以直接使用，或重新测试连接。");
         } catch {onConnection(false);}
@@ -80,7 +80,7 @@
         try {
           await request(prefix==="vision"?"/api/ai/vision/config":"/api/ai/config",cfg);
           node(prefix,"ApiKey").value="";form.touched=false;await refresh();
-          message(prefix,`${cfg.model} 已连接，配置已在本机加密保存。${prefix==="vision"?"识图测试已通过，带图题目的批改将使用此接口。":""}`);notify("接口已保存");
+          message(prefix,`${cfg.model} 已连接，配置已在本机加密保存。${prefix==="vision"?"识图测试已通过，图表提取将使用此接口，核对后由文字接口批改。":""}`);notify("接口已保存");
         } catch(error) {message(prefix,`${error.message}。之前保存的接口保持不变。`,true);}
         finally {form.saving=false;controls.forEach((control,i)=>{control.disabled=disabled[i];});}
       }
@@ -89,7 +89,7 @@
         try {
           await request(prefix==="vision"?"/api/ai/vision/disconnect":"/api/ai/disconnect",{});
           forms.get(prefix).touched=false;invalidate(prefix);populate(prefix,{});node(prefix,"ApiKey").value="";await refresh();
-          message(prefix,prefix==="vision"?"已删除独立图片配置，带图题目将使用文字接口所选模型；该模型必须支持识图。":"已删除文字接口配置。");
+          message(prefix,prefix==="vision"?"已删除独立图片配置，图表提取将使用文字接口所选模型；该模型必须支持识图。":"已删除文字接口配置。");
         }catch(error){message(prefix,error.message,true);}
       }
       function bind() {

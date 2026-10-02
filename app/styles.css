@@ -297,6 +297,12 @@ body.practice-focus :is(#returnWritingOverview,.practice-completion) { display: 
 .writing-session-footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 4px 0; }
 .writing-session-footer > span { color: var(--muted); font-size: .82rem; }
 .writing-session-footer .writing-actions { margin: 0; }
+.writing-chart-check { margin-top: 20px; padding: 24px; }
+.writing-chart-check h3 { margin-top: 0; }
+.writing-chart-check textarea { width: 100%; resize: vertical; min-height: 220px; margin: 10px 0 16px; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); font: inherit; line-height: 1.7; }
+.writing-chart-check textarea:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.writing-chart-check p { line-height: 1.7; }
+body.practice-focus .writing-chart-check { display: none; }
 .editor-toolbar { display: grid; grid-template-columns: minmax(150px, 190px) minmax(145px, 175px) minmax(0, 1fr); align-items: end; gap: 18px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
 .mini-field { display: grid; gap: 6px; min-width: 155px; }
 .writing-time-controls { justify-self: end; display: flex; align-items: center; gap: 11px; padding-left: 18px; border-left: 1px solid var(--line); }

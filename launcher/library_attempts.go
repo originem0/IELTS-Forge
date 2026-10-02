@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -14,29 +15,30 @@ import (
 var errAttemptConflict = errors.New("练习已在其他页面更新，请重新载入后继续")
 
 type libraryAttempt struct {
-	ID              string              `json:"id"`
-	Revision        int                 `json:"revision"`
-	PackID          string              `json:"packId"`
-	UnitID          string              `json:"unitId"`
-	ExamID          string              `json:"examId,omitempty"`
-	StartedAt       string              `json:"startedAt,omitempty"`
-	DeadlineAt      string              `json:"deadlineAt,omitempty"`
-	Mode            string              `json:"mode"`
-	Status          string              `json:"status"`
-	ReviewOf        string              `json:"reviewOf,omitempty"`
-	ReviewQuestions []string            `json:"reviewQuestions,omitempty"`
-	Highlights      []libraryHighlight  `json:"highlights,omitempty"`
-	Answers         map[string][]string `json:"answers"`
-	Marked          []string            `json:"marked,omitempty"`
-	Notes           map[string]string   `json:"notes,omitempty"`
-	ElapsedSeconds  int                 `json:"elapsedSeconds"`
-	AudioSeconds    float64             `json:"audioSeconds,omitempty"`
-	AudioRate       float64             `json:"audioRate,omitempty"`
-	AudioTrack      int                 `json:"audioTrack,omitempty"`
-	AudioEnded      bool                `json:"audioEnded,omitempty"`
-	ActivityDates   []string            `json:"activityDates,omitempty"`
-	CreatedAt       string              `json:"createdAt"`
-	UpdatedAt       string              `json:"updatedAt"`
+	Explanations    map[string]objectiveExplanation `json:"explanations,omitempty"`
+	ID              string                          `json:"id"`
+	Revision        int                             `json:"revision"`
+	PackID          string                          `json:"packId"`
+	UnitID          string                          `json:"unitId"`
+	ExamID          string                          `json:"examId,omitempty"`
+	StartedAt       string                          `json:"startedAt,omitempty"`
+	DeadlineAt      string                          `json:"deadlineAt,omitempty"`
+	Mode            string                          `json:"mode"`
+	Status          string                          `json:"status"`
+	ReviewOf        string                          `json:"reviewOf,omitempty"`
+	ReviewQuestions []string                        `json:"reviewQuestions,omitempty"`
+	Highlights      []libraryHighlight              `json:"highlights,omitempty"`
+	Answers         map[string][]string             `json:"answers"`
+	Marked          []string                        `json:"marked,omitempty"`
+	Notes           map[string]string               `json:"notes,omitempty"`
+	ElapsedSeconds  int                             `json:"elapsedSeconds"`
+	AudioSeconds    float64                         `json:"audioSeconds,omitempty"`
+	AudioRate       float64                         `json:"audioRate,omitempty"`
+	AudioTrack      int                             `json:"audioTrack,omitempty"`
+	AudioEnded      bool                            `json:"audioEnded,omitempty"`
+	ActivityDates   []string                        `json:"activityDates,omitempty"`
+	CreatedAt       string                          `json:"createdAt"`
+	UpdatedAt       string                          `json:"updatedAt"`
 }
 
 type libraryHighlight struct {
@@ -200,6 +202,19 @@ func (s *diskStore) validateAttemptLocked(attempt libraryAttempt) error {
 	}
 	if attempt.ReviewOf != "" {
 		original, err := s.loadAttemptLocked(attempt.ReviewOf)
+		// A saved review remains usable after its source attempt is deleted.
+		// Its immutable source and question scope were validated on creation.
+		if errors.Is(err, os.ErrNotExist) {
+			previous, previousErr := s.loadAttemptLocked(attempt.ID)
+			if previousErr == nil && previous.ReviewOf == attempt.ReviewOf && previous.PackID == attempt.PackID && previous.UnitID == attempt.UnitID && previous.ExamID == attempt.ExamID && slices.Equal(previous.ReviewQuestions, attempt.ReviewQuestions) {
+				for id := range attempt.Answers {
+					if len(previous.ReviewQuestions) > 0 && !slices.Contains(previous.ReviewQuestions, id) {
+						return errors.New("答案超出本次重练范围")
+					}
+				}
+				return nil
+			}
+		}
 		if err != nil || original.PackID != attempt.PackID || original.UnitID != attempt.UnitID || original.ExamID != attempt.ExamID || original.Status != "submitted" || original.ID == attempt.ID {
 			return errors.New("复习来源无效")
 		}
@@ -228,6 +243,8 @@ func (s *diskStore) validateAttemptLocked(attempt libraryAttempt) error {
 }
 
 func (s *diskStore) saveAttempt(attempt libraryAttempt, directoryID ...string) (libraryAttempt, error) {
+	// AI explanations are written only by their dedicated validated endpoint.
+	attempt.Explanations = nil
 	s.Lock()
 	defer s.Unlock()
 	if err := s.checkDirectoryLocked(directoryID...); err != nil {
@@ -324,6 +341,42 @@ func (s *diskStore) saveAttempt(attempt libraryAttempt, directoryID ...string) (
 }
 
 func registerLibraryAttemptsAPI(mux *http.ServeMux) {
+	registerObjectiveExplanationsAPI(mux)
+	mux.HandleFunc("DELETE /api/library/attempts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		disk.Lock()
+		defer disk.Unlock()
+		if err := disk.checkDirectoryLocked(r.Header.Get("X-ELP-Directory")); err != nil {
+			writeError(w, 409, err.Error())
+			return
+		}
+		id := r.PathValue("id")
+		if !safeAttemptID(id) {
+			writeError(w, 400, "练习编号无效")
+			return
+		}
+		attempt, err := disk.loadAttemptLocked(id)
+		if err != nil {
+			writeError(w, 404, "练习不存在或已损坏")
+			return
+		}
+		revision, err := strconv.Atoi(r.Header.Get("If-Match"))
+		if err != nil || revision != attempt.Revision {
+			writeError(w, 409, "记录已更新，请刷新后再删除")
+			return
+		}
+		// Remove the rolling copy first so it cannot resurrect a deleted attempt.
+		for _, suffix := range []string{".backup.json", ".json"} {
+			path, err := disk.libraryPathLocked("attempts", id+suffix)
+			if err == nil {
+				err = os.Remove(path)
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				writeError(w, 500, "无法删除练习记录")
+				return
+			}
+		}
+		writeJSON(w, 200, map[string]bool{"deleted": true})
+	})
 	mux.HandleFunc("PUT /api/library/attempts/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var attempt libraryAttempt
 		if err := decodeLibraryJSON(w, r, 1<<20, &attempt); err != nil || attempt.ID != r.PathValue("id") {

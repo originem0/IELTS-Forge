@@ -138,6 +138,14 @@
               <div id="writingCompletion" class="practice-completion hidden"><h3>这一篇已完成</h3><p>先检查有没有回应题目、给出理由和例子，再核对一处表达。可以继续修改，也可以按需获取 AI 反馈。</p><p id="completedLanguageReminder" class="practice-language-hint hidden"></p><details><summary>不用 AI，也可以先这样复盘</summary><ol><li>圈出最直接回答题目的句子。</li><li>检查每个观点后是否有理由或例子。</li><li>选一句重新表达，再和原句比较。</li></ol></details></div>
               <div class="writing-session-footer"><span id="saveStatus">内容会自动保存到本机</span><div class="button-row writing-actions"><button id="reviewWriting" class="button button-primary ai-required">AI 写作反馈</button><button id="deleteWriting" class="button button-danger-quiet hidden">删除记录</button></div></div>
               <div id="writingReview" class="ai-output hidden"></div>
+              <section id="writingChartCheck" class="panel writing-chart-check hidden" aria-labelledby="writingChartTitle">
+                <h3 id="writingChartTitle">核对图表信息</h3>
+                <p>对照上方原图检查数字、单位、图例和变化关系。可直接修改下方内容；确认后，仅将这些信息和作文交给文字 AI 批改。</p>
+                <label for="writingChartText">图表信息与待核对项</label>
+                <textarea id="writingChartText" rows="12" maxlength="24000"></textarea>
+                <p id="writingChartStatus" class="muted" role="status"></p>
+                <div class="button-row"><button id="confirmWritingChart" class="button button-primary">已核对，开始文字批改</button><button id="extractWritingChart" class="button button-secondary">重新提取图表</button></div>
+              </section>
             </section>
           </div>
         </div>
@@ -334,7 +342,7 @@
           </form>
           <form id="visionSettings" class="panel settings-card">
             <div class="panel-title"><h3>独立图片接口 <small class="muted">可选</small></h3><span id="visionAiBadge" class="status-badge status-off">使用文字接口</span></div>
-            <p class="muted">可以另选一家服务来完成带图题目的批改，地址、Key 和模型分别保存。</p>
+            <p class="muted">用于提取写作题图。提取后由你核对，再交给文字接口批改作文；地址、Key 和模型分别保存。</p>
             <p id="imageRouteStatus" class="muted" role="status" aria-live="polite">未配置独立图片接口时，带图题目使用文字接口所选的模型；该模型必须支持识图。</p>
             <label class="field"><span>服务来源</span><select id="visionProvider"><option value="custom">中转站 / 自定义地址</option><option value="openai">OpenAI 官方</option><option value="anthropic">Claude 官方</option><option value="glm">GLM 官方</option><option value="gemini">Gemini 官方</option><option value="grok">Grok 官方</option><option value="deepseek">DeepSeek 官方</option></select></label>
             <label class="field"><span>接口地址</span><input id="visionBaseUrl" type="url" placeholder="https://另一个中转站/v1" autocomplete="off" required><small id="visionProviderHelp">支持与文字接口不同的地址、Key 和模型。</small></label>

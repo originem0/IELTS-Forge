@@ -23,7 +23,7 @@ const server = http.createServer(async (req, res) => {
       if (['PUT','PATCH'].includes(req.method)) { let body=''; for await(const chunk of req) body+=chunk; data=applyStateRequest(data,JSON.parse(body),req.method); }
       res.end(JSON.stringify({ data, storage: { bound: true, ready: true } }));
     } else if (req.url === '/api/ai/status') res.end(JSON.stringify({ connected: true, model: 'synthetic' }));
-    else if (req.url === '/api/ai/chat') { chatCalls++; let body=''; for await (const chunk of req) body+=chunk; const request=JSON.parse(body); res.end(JSON.stringify({ content:request.messages[0].content.startsWith('只为用户提供') ? punctuationResponse : markdown })); }
+    else if (req.url === '/api/ai/chat') { chatCalls++; let body=''; for await (const chunk of req) body+=chunk; const request=JSON.parse(body); res.end(JSON.stringify({ content:request.messages[0].content.startsWith('只提取 IELTS') ? JSON.stringify({description:'Synthetic chart: 10 in 2000, 20 in 2010.',uncertainties:'无'}) : request.messages[0].content.startsWith('只为用户提供') ? punctuationResponse : markdown })); }
     else { res.statusCode=404; res.end('{}'); }
     return;
   }
@@ -99,10 +99,24 @@ const server = http.createServer(async (req, res) => {
     assert.equal(await page.locator('#reviewWriting').isVisible(),false,'focused rewriting keeps post-answer actions hidden');
     await page.locator('#finishWritingSession').click();
     await page.locator('#reviewWriting').click();
+    await page.locator('#writingChartCheck:not(.hidden)').waitFor();
+    assert.ok(!data.writings.find(item => item.id !== 'w1')?.review, 'chart extraction must wait for human confirmation');
+    await page.locator('#writingChartText').fill('Corrected chart: 10 in 2000, 30 in 2010.');
+    await page.waitForFunction(() => document.getElementById('saveStatus').textContent.startsWith('已自动保存'));
+    const chartAttemptId = data.writings.find(item => item.id !== 'w1').id;
+    await page.reload();
+    await page.locator(`[data-writing-id="${chartAttemptId}"]`).click();
+    await page.locator('#writingChartCheck:not(.hidden)').waitFor();
+    assert.equal(await page.locator('#writingChartText').inputValue(),'Corrected chart: 10 in 2000, 30 in 2010.');
+    await fs.mkdir(path.join(root,'dist-test/ai-learning'),{recursive:true});
+    await page.locator('#writingChartCheck').screenshot({path:path.join(root,'dist-test/ai-learning/chart-confirmation.png')});
+    await page.locator('#confirmWritingChart').click();
     await page.waitForURL(/#review\/writing\//);
     await page.waitForTimeout(100);
     assert.equal(data.writings.find(item => item.id === 'w1').essay,'Original essay','the reviewed source attempt must remain unchanged');
     assert.equal(data.writings.find(item => item.id !== 'w1')?.reviewInput?.original,'Rewritten essay','the rewrite must be saved as a separate attempt');
+    assert.equal(data.writings.find(item => item.id !== 'w1')?.reviewInput?.chartText,'Corrected chart: 10 in 2000, 30 in 2010.');
+    assert.match(await page.locator('#reviewChartEvidence').textContent(), /30 in 2010/);
     assert.equal(await page.locator('#reviewWorkspace').isVisible(),true);
     await checkMarkdown('#reviewOverviewSummary');
     assert.equal(await page.locator('#reviewWorkspacePrompt').textContent(),'Writing question');

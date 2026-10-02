@@ -261,6 +261,7 @@ const upload = data => ({ name: 'fixture.json', mimeType: 'application/json', bu
     await page.waitForFunction(()=>document.querySelector('.objective-heading h2')?.textContent==='The community library' && document.querySelector('.objective-score'));
     assert.equal(await page.locator('.objective-heading h2').textContent(),'The community library','updating bank changed historical question');
     await require('./listening-ui.cjs')(page,base,artifacts);
+    await require('./objective-delete.cjs')(page,base);
     await require('./backup-ui.cjs')(page,base);
     await require('./four-skill-plan-ui.cjs')(page);
     await require('./mock-ui.cjs')(page,base,artifacts);

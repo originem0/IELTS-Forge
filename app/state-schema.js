@@ -16,9 +16,10 @@
     for (const key of ["type", "part", "prompt", "essay", "transcript", "audio", "review", "topicTitle", "status", "updatedAt", "createdAt", "reviewedAt", "original", "correction", "explanation", "module", "category", "text", "translation", "example"]) optional(value, key, text, path);
     for (const key of ["minutes", "duration", "attemptNumber"]) optional(value, key, number, path);
     for (const key of ["images", "promptImages"]) optional(value, key, strings, path);
-    for (const key of ["reviewInput", "questionRef"]) optional(value, key, object, path);
+    for (const key of ["reviewInput", "questionRef", "chartExtraction"]) optional(value, key, object, path);
+    if (value.chartExtraction) for (const key of ["text", "sourceKey", "confirmedAt", "model"]) optional(value.chartExtraction, key, text, `${path}.chartExtraction`);
     if (value.reviewInput) {
-      for (const key of ["original", "prompt", "type", "part"]) optional(value.reviewInput, key, text, `${path}.reviewInput`);
+      for (const key of ["original", "prompt", "type", "part", "chartText", "chartConfirmedAt"]) optional(value.reviewInput, key, text, `${path}.reviewInput`);
       optional(value.reviewInput, "promptImages", strings, `${path}.reviewInput`);
     }
   }
