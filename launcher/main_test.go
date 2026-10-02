@@ -107,6 +107,7 @@ func TestSelectedDirectoryPersistsAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(first.close)
 	if loadedExisting, err := first.switchDirectory(dataRoot); err != nil {
 		t.Fatal(err)
 	} else if loadedExisting {
@@ -118,10 +119,20 @@ func TestSelectedDirectoryPersistsAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.directoryPath() != dataRoot {
-		t.Fatalf("selected directory was not restored: %s", second.directoryPath())
-	}
 	t.Cleanup(second.close)
+	selected, err := os.Stat(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.Stat(second.directoryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows may expand RUNNER~1 in the selected path. Compare directory
+	// identity so equivalent short/long paths still prove binding persistence.
+	if !os.SameFile(selected, restored) {
+		t.Fatalf("selected directory %s was not restored: %s", dataRoot, second.directoryPath())
+	}
 	if _, err := os.Stat(filepath.Join(dataRoot, dataFilename)); err != nil {
 		t.Fatalf("data file was not created: %v", err)
 	}
