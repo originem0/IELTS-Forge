@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#16352f">
   <meta name="description" content="English Learning Path：本地优先、可自行导入材料的英语学习中心。">
   <title>English Learning Path · 英语学习路径</title>
-  <link rel="stylesheet" href="styles.css?v=20260910d">
+  <link rel="stylesheet" href="styles.css?v=20261002-guide">
   <link rel="stylesheet" href="library.css?v=20260930a">
   <link rel="stylesheet" href="desktop.css?v=20261001a">
 </head>
@@ -380,13 +380,103 @@
 
       <section class="page" data-page="guide">
         <div class="guide panel">
-          <span class="kicker">START SMALL</span><h2>第一次备考，从这里开始</h2><p>不用先知道自己的分数，也不用先配置 AI。认清题型，做一小段，再学会复盘。</p>
+          <header class="guide-intro">
+            <div><span class="kicker">START SMALL</span><h2>第一次认识雅思</h2><p>从没做过雅思题也没关系。先看看考试会让你做什么，再用一小段练习，走完作答、对答案和复盘的过程。</p></div>
+            <div class="guide-start"><button id="startBeginnerPractice" type="button" class="button button-primary">体验 3 题阅读</button><small>约 3 分钟 · 原创热身 · 不估分</small><p id="beginnerPracticeStatus" role="status"></p></div>
+          </header>
           <ol class="beginner-steps">
-            <li><span class="step-number">01</span><div><h3>先认清四科</h3><p>听力听录音答题，阅读根据文章找依据；写作完成文字任务，口语回答问题并展开。</p><details><summary>A 类、G 类、Task 和 Part 是什么？</summary><div class="guide-skill-grid"><article><h4>阅读与听力</h4><p>听力分 4 部分。阅读和听力都要留意题目要求，例如只能填一个词。</p></article><article><h4>写作 · Task 是任务</h4><p>A 类 Task 1 描述图表、地图或流程；G 类 Task 1 写书信。两类的 Task 2 都要写议论文。</p></article><article><h4>口语 · Part 是部分</h4><p>Part 1 聊熟悉的日常话题；Part 2 先准备 1 分钟，再讲最多 2 分钟；Part 3 进一步讨论相关观点。</p></article><article><h4>先确认报名类型</h4><p>Academic 是 A 类，General Training 是 G 类。两类听力、口语相同，阅读、写作不同。按学校或申请机构要求选择，不必在这里猜。</p></article></div><p class="guide-source">题型说明参考 <a href="https://ielts.org/take-a-test/test-types/ielts-academic-test" target="_blank" rel="noreferrer">IELTS 官方考试介绍</a>。本页热身题为原创练习。</p></details></div></li>
-            <li><span class="step-number">02</span><div><h3>先完成 3 道题</h3><p>读一段关于图书馆的短文，练习找信息和判断正误。约 3 分钟，按自己的速度完成；它不是雅思真题，不用于估分。</p><button id="startBeginnerPractice" type="button" class="button button-primary">体验 3 题阅读</button><p id="beginnerPracticeStatus" role="status"></p></div></li>
-            <li><span class="step-number">03</span><div><h3>找到依据，再练一次</h3><p>提交后先看错题，点击原文依据找出理由。弄懂后只重练错题；写作或口语则选一句改好，再重新表达。</p><div class="button-row"><button type="button" class="button button-secondary" data-route="library">已有资料，去题库选题</button><button type="button" class="button button-quiet" data-route="plan">练过以后，再安排计划</button></div></div></li>
+            <li><span class="step-number">01</span><div>
+              <h3>雅思考什么，先选哪一种？</h3>
+              <p>雅思（IELTS）是一项英语能力考试，分听力、阅读、写作和口语四科。你会听英语录音、读英语文章，再用英语写作和交谈；没有单独一张语法试卷。整场考试合计约 2 小时 45 分钟。</p>
+              <div class="guide-skill-grid">
+                <article><h4>Academic · A 类 · 学术类</h4><p>常用于本科、研究生申请或专业资格注册。阅读偏学术话题，写作第一项任务是描述图表等视觉信息。</p></article>
+                <article><h4>General Training · G 类 · 培训类</h4><p>常用于移民、工作或部分非学位培训。阅读涉及生活和工作材料，写作第一项任务是写信。</p></article>
+              </div>
+              <p>两类的听力和口语相同，阅读和写作不同。<strong>按接收成绩的学校或机构要求选类型</strong>，同时确认总分、小分和是否要求 UKVI 等指定考试；小分就是某一科的分数。</p>
+              <p class="guide-note">A 类 / G 类说的是考试用途与内容，机考 / 纸笔说的是作答方式，两者不是一回事。可选方式、听力核对或誊写时间、口语场次，以报考地区当次官方安排为准。本应用用于练习，考试界面和流程仍需通过官方样题熟悉。</p>
+              <p class="guide-source">官方说明 <a href="https://ielts.org/take-a-test/test-types/ielts-academic-test" target="_blank" rel="noreferrer">A 类考试</a> · <a href="https://ielts.org/take-a-test/test-types/ielts-general-training-test" target="_blank" rel="noreferrer">G 类考试</a></p>
+            </div></li>
+            <li><span class="step-number">02</span><div>
+              <h3>四科分别怎么做？</h3>
+              <p>Task 是写作任务，Part 是听力或口语的一个部分，Passage 是阅读文章。先看这张全貌，再展开你想了解的一科。</p>
+              <dl class="guide-overview">
+                <div><dt>听力 Listening</dt><dd><strong>约 30 分钟</strong><span>4 部分 · 40 题<br>听录音，选择或填写答案</span></dd></div>
+                <div><dt>阅读 Reading</dt><dd><strong>60 分钟</strong><span>3 部分 · 40 题<br>读文章，找到答案依据</span></dd></div>
+                <div><dt>写作 Writing</dt><dd><strong>60 分钟</strong><span>2 项任务 · 两项都要写<br>按题目要求组织完整文章</span></dd></div>
+                <div><dt>口语 Speaking</dt><dd><strong>11–14 分钟</strong><span>3 部分 · 与考官交谈<br>从日常问答到展开讨论</span></dd></div>
+              </dl>
+              <p class="guide-source">下方英文片段均为原创示意，帮助理解题型，不是真题或完整高分范文。</p>
+              <details class="guide-topic">
+                <summary>听力 · 录音只放一遍，要边听边答</summary>
+                <div class="guide-topic-body">
+                  <p>四部分各 10 题。Part 1 是生活对话，例如预订房间；Part 2 是生活场景独白，例如介绍设施；Part 3 是教育或培训场景讨论；Part 4 是学术主题独白。录音会出现不同英语口音。</p>
+                  <p>题目可能让你填表、补笔记、选择答案、配对信息，或在地图上找位置。利用录音中的读题时间先看空格需要什么；答案信息按题号顺序出现，漏掉一题时先跟住后面的内容。</p>
+                  <div class="guide-example"><span class="guide-example-label">看懂一道填空</span><p lang="en">ONE WORD ONLY<br>The class is on ______.</p><p>要求只填一个词。假设录音说 <span lang="en">The class is on Thursday.</span>，应填 <strong lang="en">Thursday</strong>，不要多写 <span lang="en">on</span>。先检查拼写，再检查有没有超出词数限制。</p></div>
+                  <p><strong>第一次怎么练</strong>　只做一小组题。先独立听一遍并提交，再回听错题附近的录音，最后看文字稿，分清是单词不认识、声音没听出来，还是跟丢了位置。反复播放适合复盘，正式考试只播放一次。</p>
+                  <p class="guide-source"><a href="https://ielts.org/take-a-test/test-types/ielts-academic-test/ielts-academic-format-listening" target="_blank" rel="noreferrer">官方听力题型与规则</a></p>
+                </div>
+              </details>
+              <details class="guide-topic">
+                <summary>阅读 · 用文章里的证据作答</summary>
+                <div class="guide-topic-body">
+                  <p>A 类阅读通常是 3 篇较长文章，面向非专业读者；G 类从生活短文、工作材料逐步进入较长文章。两类都是 40 题，阅读和填写答案共用 60 分钟，没有额外誊写时间。</p>
+                  <p>常见题型包括选择、填空、信息配对、给段落选标题，以及判断正误。标题题问整段主要在说什么，信息配对问某条细节在哪里；看见相同单词，还要读上下文确认含义。</p>
+                  <div class="guide-example"><span class="guide-example-label">True / False / Not Given 怎么分？</span><p>假设原文只有一句 <span lang="en">The library opens at 9 am on weekdays.</span><br>图书馆在工作日上午 9 点开门。</p><dl class="guide-verdicts"><div><dt lang="en">True · 正确</dt><dd><span lang="en">It opens at 9 am on Mondays.</span><br>周一 9 点开门，与原文一致。</dd></div><div><dt lang="en">False · 错误</dt><dd><span lang="en">It opens at 8 am on Mondays.</span><br>周一 8 点开门，与原文矛盾。</dd></div><div><dt lang="en">Not Given · 未提及</dt><dd><span lang="en">It opens at 9 am on Sundays.</span><br>原文没有交代周日，不能判断。</dd></div></dl></div>
+                  <p><strong>没找到，不等于 False。</strong>False 需要有反面证据，Not Given 是信息不足。Yes / No / Not Given 则是在判断作者的观点或主张，作答时要用题目要求的那组标签。</p>
+                  <p><strong>第一次怎么练</strong>　先看问题，再回文章找相关句子，读懂前后关系后作答。遇到生词先判断它是否影响答案，提交后再查；不用第一遍就逐句翻译全文。</p>
+                  <p class="guide-source">官方阅读说明 <a href="https://ielts.org/take-a-test/test-types/ielts-academic-test/ielts-academic-format-reading" target="_blank" rel="noreferrer">A 类</a> · <a href="https://ielts.org/take-a-test/test-types/ielts-general-training-test/ielts-general-training-format-reading" target="_blank" rel="noreferrer">G 类</a></p>
+                </div>
+              </details>
+              <details class="guide-topic">
+                <summary>写作 · Task 1 和 Task 2 都要完成</summary>
+                <div class="guide-topic-body">
+                  <p>两项任务合计 60 分钟。通常给 Task 1 约 20 分钟、Task 2 约 40 分钟，这是时间分配建议。Task 1 至少 150 词，Task 2 至少 250 词；<strong>Task 2 在写作成绩中的权重是 Task 1 的两倍。</strong></p>
+                  <h4>A 类 Task 1 · 把图里的主要信息讲清楚</h4><p>题目可能是折线图、柱状图、饼图、表格、地图或流程图。说明图展示什么，概括主要趋势或变化，再选关键数据与差异展开。只描述图中有依据的信息，不编造原因，也不用逐个罗列所有数字。</p>
+                  <div class="guide-example"><span class="guide-example-label">数据描述示意</span><p>假设图中骑车人数从 2010 年的 200 人增至 2020 年的 400 人，可以写 <span lang="en">The number of cyclists doubled between 2010 and 2020.</span> 这只是一句比较，完整答案还需要整体概括和相关细节。</p></div>
+                  <h4>G 类 Task 1 · 给指定对象写一封信</h4><p>读清情境、收信人和三个要点，再确定语气。三个要点都要回应；给朋友写信与给负责人写信，称呼和措辞会不同。</p>
+                  <div class="guide-example"><span class="guide-example-label">书信题意示意</span><p>你参加的英语课换了上课时间，导致你无法到课。给课程负责人写信，说明你的情况、解释新时间带来的困难，并提出一个解决办法。三个要求都要写到，不能只表达不满。</p></div>
+                  <h4>两类 Task 2 · 回答一个观点或问题</h4><p>题目可能要求表明同意程度、讨论双方观点、分析利弊，或解释问题并提出办法。先圈出所有问题，再组织观点、理由和例子；正式答案要写成连贯段落，不能只列提纲。</p>
+                  <div class="guide-example"><span class="guide-example-label">议论题意示意</span><p lang="en">Some people think public transport should be free. To what extent do you agree or disagree?</p><p>这道题问你在多大程度上同意公共交通免费。先明确立场，再解释理由并展开例子；只介绍公交车有哪些优点，还没有完整回答问题。</p></div>
+                  <p><strong>第一次怎么练</strong>　先把一个观点写成几句清楚的英语，再逐步写完整文章。最低词数是正式任务要求；本页的三句热身只是起步练习，不能据此估写作分数。</p>
+                  <p class="guide-source">官方写作说明 <a href="https://ielts.org/take-a-test/test-types/ielts-academic-test/ielts-academic-format-writing" target="_blank" rel="noreferrer">A 类</a> · <a href="https://ielts.org/take-a-test/test-types/ielts-general-training-test/ielts-general-training-format-writing" target="_blank" rel="noreferrer">G 类</a></p>
+                </div>
+              </details>
+              <details class="guide-topic">
+                <summary>口语 · 从熟悉的生活聊到更一般的观点</summary>
+                <div class="guide-topic-body">
+                  <p>正式口语由考官与你交谈，全程录音。三部分合计 11–14 分钟；这里的录音练习帮助你回听和改进表达，不等同于真实考官的互动。</p>
+                  <h4>Part 1 · 日常问答 · 4–5 分钟</h4><p>聊学习、工作、住处、爱好等熟悉的话题。先直接回答，再自然补一个理由或细节。4–5 分钟是整个部分的时长，不是每题的时长。</p>
+                  <div class="guide-example"><span class="guide-example-label">一次简短回答</span><p lang="en">What do you like to do in your free time?</p><p lang="en">I like walking in the park near my home. It helps me relax after work.</p><p>先说喜欢做什么，再说原因。用自己真实、熟悉的细节继续展开，不必背这两句。</p></div>
+                  <h4>Part 2 · 按题卡连续讲述 · 共约 3–4 分钟</h4><p>拿到一张话题卡后，有 1 分钟准备，可以记关键词。随后连续讲 1–2 分钟，考官可能再追问一两句。例如介绍一个喜欢的地方，说明它在哪里、你在那里做什么，以及为什么喜欢。准备时列出顺序和细节，比写完整稿更容易用上。</p>
+                  <h4>Part 3 · 延伸讨论 · 4–5 分钟</h4><p>话题与 Part 2 相关，但从个人经历走向社会现象或一般观点。例如从你喜欢的公园，谈到城市为什么需要公共空间。可以先表明观点，再用原因、例子或对比展开。</p>
+                  <p><strong>第一次怎么练</strong>　先录一个 Part 1 回答，再回听自己有没有答到问题、哪里停顿太久、哪句话没说清。选一处修改后重新说。本应用的 Part 2 会先进行 1 分钟不录音的准备，再进入最长 2 分钟的录音。</p>
+                  <p class="guide-source"><a href="https://ielts.org/take-a-test/test-types/ielts-academic-test/ielts-academic-format-speaking" target="_blank" rel="noreferrer">官方口语流程与评分维度</a></p>
+                </div>
+              </details>
+            </div></li>
+            <li><span class="step-number">03</span><div>
+              <h3>分数怎么看，怎样才算有进步？</h3>
+              <p>雅思采用 0–9 分制，会给出四科小分和一个总分，常见半分如 6.5。没有统一的及格线，要看接收机构的要求。<strong>总分是四科平均后按规则取到最近的整分或半分</strong>，不是四科分数相加。</p>
+              <div class="guide-example"><span class="guide-example-label">一个总分例子</span><p>听力 6.5、阅读 6.5、写作 5.0、口语 7.0，平均为 6.25，总分记为 6.5。但如果申请要求每科至少 6.0，写作仍未达到要求。</p></div>
+              <div class="guide-skill-grid">
+                <article><h4>听力与阅读 · 看答对多少</h4><p>每题答对得 1 分，再把 40 题的原始分换算成等级分。不同试卷的换算可能略有差异，A 类和 G 类阅读也不能套用同一张换算表。三道热身题的正确率不能推算雅思分数。</p></article>
+                <article><h4>写作与口语 · 看表达质量</h4><p>写作看任务完成或回应、连贯衔接、词汇、语法。口语看流利与连贯、词汇、语法、发音，各项同等重要。写得长、用词难、说得快，都不自动等于高分。</p></article>
+              </div>
+              <p>刚开始先观察小变化：能不能指出阅读答案的依据，听出以前漏掉的一句，把理由说完整，或不再重复同一个语法错误。本应用的 AI 批改是练习反馈，不是官方成绩；仅凭转写文字也无法可靠判断发音。</p>
+              <p class="guide-source"><a href="https://ielts.org/take-a-test/your-results/ielts-scoring-in-detail" target="_blank" rel="noreferrer">官方分数计算与评分标准</a></p>
+            </div></li>
+            <li><span class="step-number">04</span><div>
+              <h3>第一次练习，走完这个小循环</h3>
+              <p>今天先完成一小段即可。还没试过的话，回到本页顶部体验 3 题阅读：材料是一段图书馆短文，用来练习找信息和判断正误，不是正式雅思难度。</p>
+              <ol class="guide-practice-loop"><li><strong>先自己作答。</strong>按自己的速度读题，做出判断，暂时不看答案。记录卡住的位置，不用急着给自己定分。</li><li><strong>提交后找依据。</strong>对照答案和原文，分清是词不认识、句子没读懂、漏了限制，还是把未提及当成错误。听力则回听对应片段。</li><li><strong>只改一处，再练一次。</strong>阅读重新判断错题；写作改好一句，再放回段落；口语重说一个回答。隔天再回顾一次，检查自己是否真的会了。</li></ol>
+              <p>也可以从表达开始。这两个入口会放入原创热身题，不需要先找题或配置 AI。</p>
+              <div class="button-row"><button id="beginnerWriting" type="button" class="button button-secondary">先写 3 句英语</button><button id="beginnerSpeaking" type="button" class="button button-secondary">试着回答一个口语问题</button></div>
+              <p>熟悉流程后，再做一个完整部分，逐步加入正式时间限制。学习计划里给查错、回听和重写留出时间，别把每天做多少新题当成唯一目标。</p>
+              <div class="button-row"><button type="button" class="button button-secondary" data-route="library">去题库选题或导入</button><button type="button" class="button button-quiet" data-route="plan">安排学习计划</button></div>
+            </div></li>
           </ol>
-          <details class="guide-help"><summary>想开始写作或口语？需要 AI 吗？</summary><p>写作可以自己输入题目，口语可以输入一个日常问题。计时、保存和完整包内的语音转写都不需要 AI。写说自动批改和个人语料提炼需要在设置页连接自己的 AI 服务；没有 AI 时，仍可回听、自己修改和记单词。</p><div class="button-row"><button id="beginnerWriting" type="button" class="button button-secondary">先写 3 句英语</button><button id="beginnerSpeaking" type="button" class="button button-secondary">试着回答一个口语问题</button></div></details>
+          <details class="guide-help"><summary>没有题库、没有 AI，也能开始吗？</summary><p>能。本页的阅读热身会自动准备题目；写作和口语也可以自己输入题目。更多听读练习需要导入适配本应用的题包，普通 PDF 或录音文件不能直接变成可判分的试卷。</p><p>计时、保存、听读题按题包答案判分，以及完整安装包里的本地语音转写，都不需要连接 AI 服务。写说自动批改和个人语料提炼需要在设置中连接自己的 AI 服务。暂时不连接，也能回听、修改和整理错题。</p><p>第一次使用先按提示选好长期保留的数据文件夹。之后写作和口语会自动保存；复盘时可以回到历史记录继续看。</p></details>
+          <footer class="guide-footer"><p>想看看真正的试题长什么样？官方样题提供题目、听力材料与参考答案。先认清自己练的是哪一类，再逐步尝试完整任务。</p><p class="guide-source"><a href="https://ielts.org/take-a-test/preparation-resources/sample-test-questions/academic-test" target="_blank" rel="noreferrer">A 类官方样题</a> · <a href="https://ielts.org/take-a-test/preparation-resources/sample-test-questions/general-training-test" target="_blank" rel="noreferrer">G 类官方样题</a><span>考试信息核对于 2026 年 10 月 2 日；报考与考务安排以当地官方通知为准。</span></p></footer>
         </div>
       </section>
       <section id="reviewWorkspace" class="page review-workspace" data-page="review" aria-labelledby="reviewWorkspaceTitle">

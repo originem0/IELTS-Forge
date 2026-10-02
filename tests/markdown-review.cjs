@@ -78,6 +78,7 @@ const server = http.createServer(async (req, res) => {
     await page.locator('#retryReviewSource').click();
     await page.waitForURL('**/#speaking');
     await page.locator('#speakingTranscript').fill('A later edit.');
+    await page.locator('#closeSpeakingPractice').click();
     await page.locator('[data-speaking-id="s1"]').click();
     assert.equal(await page.locator('#reviewWorkspaceOriginal').textContent(),'I like cycling.');
     await page.locator('#closeReviewWorkspace').click();
@@ -262,10 +263,11 @@ const server = http.createServer(async (req, res) => {
     await page.locator('.nav-item[data-route="writing"]').click();
     const layout = await page.locator('.record-list-item').first().evaluate(el=>{
       const card=el.querySelector('.library-item').getBoundingClientRect(), button=el.querySelector('.record-delete').getBoundingClientRect();
-      return {inside:button.right<=card.right && button.left>=card.left && button.top>=card.top && button.bottom<=card.bottom, reserved:parseFloat(getComputedStyle(el.querySelector('.record-title-row')).paddingRight), font:parseFloat(getComputedStyle(el.querySelector('.record-delete')).fontSize)};
+      const title=el.querySelector('.record-title-row strong').getBoundingClientRect();
+      return {inside:button.right<=card.right && button.left>=card.left && button.top>=card.top && button.bottom<=card.bottom, separated:title.right<=button.left || title.top>=button.bottom, font:parseFloat(getComputedStyle(el.querySelector('.record-delete')).fontSize)};
     });
     assert.equal(layout.inside,true);
-    assert.ok(layout.reserved>=38 && layout.font<=12);
+    assert.ok(layout.separated && layout.font<=12,'compact delete action must not overlap the history title');
     assert.equal(await page.evaluate(()=>window.pwned),undefined);
     assert.deepEqual(external,[],'rendering feedback must not load remote media');
     assert.deepEqual(errors,[]);

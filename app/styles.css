@@ -620,7 +620,7 @@ body.has-image-lightbox { overflow: hidden; }
 .status-off { color: #6f6761; background: #e9e5df; }
 .status-on { color: #0b5b4a; background: #d9eee7; }
 
-.guide { padding: clamp(34px, 6vw, 80px); }
+.guide { max-width: 1100px; margin-inline: auto; padding: clamp(20px, 3vw, 40px); }
 .guide > h2 { margin: 10px 0 35px; font: 500 clamp(38px, 5vw, 60px) Georgia, "Songti SC", serif; }
 .guide-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
 .guide-steps article { padding: 25px; border: 1px solid var(--line); border-radius: 18px; background: white; }
@@ -681,6 +681,59 @@ body.practice-focus .writing-editor > .ai-output { display: none !important; }
 .guide-skill-grid h4 { margin-bottom: 0; }
 .guide-source { font-size: 12px; color: var(--muted); }
 .guide-help { margin-top: 24px; }
+.guide-intro { display: flex; align-items: center; gap: 32px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.guide-intro > div:first-child { flex: 1; min-width: 0; }
+.guide-intro h2 { margin: 0 0 12px; }
+.guide-intro p { margin: 0; line-height: 1.8; color: var(--muted); }
+.guide-start { display: grid; justify-items: start; gap: 8px; flex-shrink: 0; }
+.guide-start small { font-size: 12px; color: var(--muted); }
+.guide-start #beginnerPracticeStatus { max-width: 220px; font-size: 12px; }
+.guide-start #beginnerPracticeStatus:empty { display: none; }
+.guide .beginner-steps > li { padding-block: 28px; }
+.guide .beginner-steps h3 { line-height: 1.6; }
+.guide .button-row { margin-block: 18px; }
+.guide-note { padding-left: 14px; border-left: 2px solid var(--line); color: var(--muted); }
+.guide-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 20px 0 12px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+.guide-overview > div { min-width: 0; padding: 16px; border-right: 1px solid var(--line); }
+.guide-overview > div:last-child { border-right: 0; }
+.guide-overview dt { font-size: 12px; font-weight: 600; }
+.guide-overview dd { margin: 10px 0 0; }
+.guide-overview strong { display: block; margin-bottom: 8px; font-size: 18px; font-weight: 600; }
+.guide-overview dd span { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.guide-topic { border-bottom: 1px solid var(--line); }
+.guide-topic:first-of-type { border-top: 1px solid var(--line); margin-top: 18px; }
+.guide .guide-topic > summary { padding: 16px 4px; }
+.guide-topic[open] > summary { color: var(--green-dark); }
+.guide-topic-body { padding: 0 4px 12px; }
+.guide-topic-body > p:first-child { margin-top: 0; }
+.guide-topic-body h4 { margin: 24px 0 8px; font-size: 14px; }
+.guide-example { margin: 18px 0; padding: 16px 20px; border-left: 3px solid var(--green); background: #f0f5f1; border-radius: 0 6px 6px 0; }
+.guide-example-label { display: block; color: var(--green-dark); font-size: 12px; font-weight: 650; }
+.guide-example p { margin: 10px 0 0; }
+.guide-example [lang="en"] { overflow-wrap: anywhere; }
+.guide-verdicts { margin: 12px 0 0; }
+.guide-verdicts > div { display: grid; grid-template-columns: 165px minmax(0, 1fr); gap: 16px; padding: 12px 0; border-top: 1px solid #d8e4dc; line-height: 1.75; }
+.guide-verdicts dt { font-weight: 600; }
+.guide-verdicts dd { margin: 0; }
+.guide-practice-loop { padding-left: 22px; line-height: 1.85; }
+.guide-practice-loop li { padding-left: 4px; margin: 12px 0; }
+.guide-footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); line-height: 1.75; }
+.guide-source a { text-decoration: underline; text-underline-offset: 3px; }
+.guide-footer .guide-source span { display: block; margin-top: 10px; }
+@media (max-width: 1100px) {
+  .guide-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .guide-overview > div:nth-child(2) { border-right: 0; }
+  .guide-overview > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+}
+@media (max-width: 780px) {
+  .guide-intro { align-items: flex-start; flex-direction: column; gap: 18px; }
+  .guide .beginner-steps > li { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .guide .step-number { font-size: 20px; }
+  .guide-overview > div { padding: 12px; }
+  .guide-overview strong { font-size: 16px; }
+  .guide-example { padding: 14px; }
+  .guide-verdicts > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}
 .plan-editor > summary, .manual-plan-options > summary, .language-reference > summary, .settings-help > summary, .guide-help > summary, .beginner-steps summary, .review-next summary { cursor: pointer; padding: 12px 0; color: var(--green); font-weight: 650; line-height: 1.6; }
 .plan-editor { padding: 18px 26px; }
 .plan-editor .plan-card { padding: 16px 0 0; }

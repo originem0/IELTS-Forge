@@ -78,7 +78,9 @@ const server = http.createServer(async (req, res) => {
       ],
       writing:[
         {domain:'Education',collocations:['increase earning potential｜提高收入潜力','reduce crime rates｜降低犯罪率','drive technological progress｜推动科技进步','equal access to education｜平等接受教育的机会','practical skills｜实用技能','lifelong learning｜终身学习'],sentencePatterns:['It is important to ensure that...｜确保……十分重要','Education can play a central role in...｜教育可以在……中发挥核心作用','This investment enables people to...｜这项投入使人们能够……','A fourth pattern should rotate.｜第四个句式用于轮换']},
-        {domain:'General linking',collocations:[{english:'however',translation:'然而'},{unexpected:{nested:true}},'such as｜例如','more importantly｜更重要的是','as a result｜因此','in contrast｜相比之下','for instance｜例如'],sentencePatterns:['While this view is understandable, ...｜尽管这种观点可以理解，……','A more important consideration is that...｜更重要的考虑是……','This is particularly evident when...｜这一点在……时尤为明显','A fourth general pattern should rotate.｜第四个通用句式用于轮换']}
+        // Keep five valid collocations so the normalization target is visible on
+        // every day; daily rotation is independently covered by Education above.
+        {domain:'General linking',collocations:[{english:'however',translation:'然而'},{unexpected:{nested:true}},'such as｜例如','more importantly｜更重要的是','as a result｜因此','in contrast｜相比之下'],sentencePatterns:['While this view is understandable, ...｜尽管这种观点可以理解，……','A more important consideration is that...｜更重要的考虑是……','This is particularly evident when...｜这一点在……时尤为明显','A fourth general pattern should rotate.｜第四个通用句式用于轮换']}
       ]
     };
     await page.reload();

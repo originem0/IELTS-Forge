@@ -33,7 +33,7 @@
     if(api.busy||!files.length)return;
     discard();const requestVersion=++version;step(1);report("正在识别题目和配套附件……");busy(true);
     try {
-      if(files.reduce((sum,file)=>sum+file.size,0)>256*1024*1024)throw new Error("资料超过 256 MB，请选择整理好的题库包或题库文件夹。");
+      if(files.reduce((sum,file)=>sum+file.size,0)>1024*1024*1024)throw new Error("资料超过 1 GB，请拆分题库包或题库文件夹。");
       const form=new FormData();for(const file of files)form.append("files",file,file.name);
       form.append("modified",JSON.stringify(files.map(file=>file.lastModified||0)));
       const result=await api.request("import/preview",{method:"POST",body:form});

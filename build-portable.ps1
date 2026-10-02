@@ -19,7 +19,9 @@ $env:GOARCH = "amd64"
 Push-Location (Join-Path $RepoRoot "launcher")
 try {
     go build -trimpath -ldflags "-s -w -H=windowsgui -X main.appVersion=$Version" -o (Join-Path $PackageRoot "启动学习中心.exe") .
+    if ($LASTEXITCODE -ne 0) { throw '启动器构建失败' }
     go build -trimpath -ldflags "-s -w -H=windowsgui" -o (Join-Path $PackageRoot "结束学习中心.exe") ./cmd/stopper
+    if ($LASTEXITCODE -ne 0) { throw '结束工具构建失败' }
 }
 finally {
     Pop-Location

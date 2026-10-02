@@ -33,14 +33,26 @@ type libraryPack struct {
 }
 
 type librarySource struct {
-	Name    string `json:"name"`
-	URL     string `json:"url"`
-	Status  string `json:"status"`
-	Season  string `json:"season,omitempty"`
-	License string `json:"license,omitempty"`
+	Name       string             `json:"name"`
+	URL        string             `json:"url"`
+	Status     string             `json:"status"`
+	Season     string             `json:"season,omitempty"`
+	License    string             `json:"license,omitempty"`
+	Provenance *libraryProvenance `json:"provenance,omitempty"`
+}
+
+// YearKind distinguishes an exam/publication year from a local collection date.
+// Source verification alone must never promote material to an authentic exam.
+type libraryProvenance struct {
+	Year     int      `json:"year"`
+	YearKind string   `json:"yearKind"`
+	Category string   `json:"category"`
+	Evidence []string `json:"evidence,omitempty"`
+	Note     string   `json:"note,omitempty"`
 }
 
 type libraryUnit struct {
+	Provenance *libraryProvenance `json:"provenance,omitempty"`
 	ID         string             `json:"id"`
 	Skill      string             `json:"skill"`
 	Part       string             `json:"part"`
@@ -94,6 +106,9 @@ type libraryQuestion struct {
 }
 
 func validatePack(pack libraryPack) error {
+	if err := validateLibraryProvenance(pack.Source.Provenance); err != nil {
+		return err
+	}
 	if pack.Version != 1 || strings.TrimSpace(pack.Title) == "" || len(pack.Units) == 0 || len(pack.Units) > 500 {
 		return errors.New("题包版本、标题或题目数量无效")
 	}
@@ -111,6 +126,9 @@ func validatePack(pack libraryPack) error {
 	}
 	units := map[string]bool{}
 	for _, unit := range pack.Units {
+		if err := validateLibraryProvenance(unit.Provenance); err != nil {
+			return err
+		}
 		if !libraryID.MatchString(unit.ID) || units[unit.ID] || strings.TrimSpace(unit.Title) == "" || strings.TrimSpace(unit.Prompt) == "" || unit.Minutes < 0 || unit.Minutes > 240 {
 			return errors.New("题目编号、标题、说明或时间无效")
 		}
@@ -280,6 +298,7 @@ func atomicLibraryWrite(path string, data []byte) error {
 func hashContent(data []byte) string { hash := sha256.Sum256(data); return hex.EncodeToString(hash[:]) }
 
 func (s *diskStore) importPack(pack libraryPack, directoryID ...string) (string, error) {
+	completeLibraryProvenance(&pack)
 	if err := validatePack(pack); err != nil {
 		return "", err
 	}
@@ -368,6 +387,7 @@ func decodeLibraryJSON(w http.ResponseWriter, r *http.Request, limit int64, targ
 }
 
 func registerLibraryAPI(mux *http.ServeMux) {
+	registerLibraryDeleteAPI(mux)
 	mux.HandleFunc("POST /api/library/packs", func(w http.ResponseWriter, r *http.Request) {
 		var pack libraryPack
 		if err := decodeLibraryJSON(w, r, maxPackSize, &pack); err != nil {
@@ -414,17 +434,7 @@ func registerLibraryMediaAPI(mux *http.ServeMux) {
 			writeError(w, 400, "媒体为空或超过 128 MB")
 			return
 		}
-		detected := http.DetectContentType(raw)
-		// Go uses container MIME names while browsers upload recordings as audio/*.
-		switch detected {
-		case "audio/wave", "audio/x-wav":
-			detected = "audio/wav"
-		case "application/ogg":
-			detected = "audio/ogg"
-		case "video/webm":
-			detected = "audio/webm"
-		}
-		if types[detected] != ext {
+		if libraryMediaExtension(raw) != ext {
 			writeError(w, 400, "媒体内容与文件类型不匹配")
 			return
 		}

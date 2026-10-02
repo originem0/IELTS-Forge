@@ -119,6 +119,9 @@
 .library-question-choice .button { flex-shrink: 0; }
 .library-format-help { margin-top: 12px; color: var(--muted); line-height: 1.65; }
 .library-format-help summary { color: var(--green); cursor: pointer; }
+.library-provenance { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.library-provenance summary { cursor: pointer; padding: 0; display: list-item; }
+.library-provenance div { margin: 5px 0; overflow-wrap: anywhere; }
 @media (max-width: 540px) {
   .objective-heading, .objective-passage, .objective-answer, .objective-review, .objective-library { padding: 20px; }
   .objective-library-row { align-items: stretch; flex-direction: column; }

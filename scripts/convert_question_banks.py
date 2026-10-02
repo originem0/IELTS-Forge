@@ -305,7 +305,16 @@ def convert_writing(root, output):
             if number == 2:
                 units.append({"id": task["id"], "skill": "writing", "part": "Task-2", "title": task["title"], "prompt": task["prompt"], "minutes": 40})
             elif number == 1:
-                # Task 1 needs the real figure; a text description never substitutes for it. The
+                hint = f"{document.get('title', '')} {task.get('title', '')} {task.get('task_type', '')}"
+                general = (re.search(r"\bgeneral[\s_-]+training\b|\btask[\s_-]*1[\s_-]+general\b|\bletter\b", hint, re.I)
+                           or str(task.get('task_type', '')).lower() == 'general'
+                           or re.search(r"\bwrite\s+a\s+letter\b", task.get('prompt', ''), re.I))
+                if general:
+                    # A letter is complete as text. Do not reject it for a missing
+                    # chart or accidentally attach another task's sibling image.
+                    units.append({"id": task["id"], "skill": "writing", "part": "Task-1-General", "title": task["title"], "prompt": task["prompt"], "minutes": 20})
+                    continue
+                # Academic Task 1 needs the real figure; a description never substitutes for it. The
                 # declared image_url is unreliable (wrong or empty extension), so resolve by the
                 # sibling sharing the document stem and confirm the type by content, not by name.
                 candidates = [path.with_suffix(ext) for ext in (".jpeg", ".jpg", ".png", ".webp", ".gif")]
@@ -321,10 +330,7 @@ def convert_writing(root, output):
                     continue  # unsupported image format — skip rather than emit an invalid reference
                 media_id = hashlib.sha256(data).hexdigest() + extension
                 (output / media_id).write_bytes(data)
-                # The importer accepts Task-1-Academic / Task-1-General (not a bare Task-1).
-                hint = f"{document.get('title', '')} {task.get('title', '')} {task.get('task_type', '')}".lower()
-                part = "Task-1-General" if "general" in hint or "letter" in hint else "Task-1-Academic"
-                units.append({"id": task["id"], "skill": "writing", "part": part, "title": task["title"], "prompt": task["prompt"], "minutes": 20, "images": [media_id]})
+                units.append({"id": task["id"], "skill": "writing", "part": "Task-1-Academic", "title": task["title"], "prompt": task["prompt"], "minutes": 20, "images": [media_id]})
     return units
 
 

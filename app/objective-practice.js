@@ -7,7 +7,7 @@
   let playingAudio = null;
   let generation = 0;
   let session = null;
-  const statusNames = { verified: "来源标注已核验", unverified: "待核验素材", generated: "生成练习题" };
+  const provenanceLabel = (...args) => window.ELPLibrary.provenanceLabel(...args);
   const kindNames = { text: "填空", single: "选择 / 判断", matching: "匹配", multiple: "多选" };
   const el = (tag, text, className) => {
     const node = document.createElement(tag);
@@ -54,15 +54,18 @@
     top.append(button("返回概览", () => go(activeSkill), "button-quiet"));
     const list = el("section", undefined, "panel objective-library"); root().append(list);
     const index = await api("packs"); const seen = new Set();
+    const activeUnits = await window.ELPLibrary.listUnits(activeSkill);
+    const activeVersions = new Map(activeUnits.map(item => [JSON.stringify([item.source.url || item.source.name, item.unit.id]), item.packId]));
     if (token !== generation) return;
     if (!index.packs.some(entry => !entry.skills || entry.skills[activeSkill])) return window.ELPLibrary.openImport(activeSkill);
     for (const entry of window.ELPLibrary.newestPacks(index.packs)) {
       const data = await pack(entry.id);
       if (token !== generation) return;
       for (const exam of (data.exams || []).filter(exam => exam.skill === activeSkill)) {
+        if (!exam.unitIds.every(id => activeVersions.get(JSON.stringify([data.source.url || data.source.name, id])) === entry.id)) continue;
         const key = `${data.source.url || data.source.name}/${exam.id}`; if (seen.has(key)) continue; seen.add(key);
         const row = el("article", undefined, "objective-library-row"); const copy = el("div");
-        copy.append(el("h3", exam.title), el("p", `${exam.unitIds.length} 部分 · 40 个计分点 · ${exam.minutes} 分钟 · ${statusNames[data.source.status]}`));
+        copy.append(el("h3", exam.title), el("p", `${exam.unitIds.length} 部分 · 40 个计分点 · ${exam.minutes} 分钟 · ${provenanceLabel(null, data.source)}`));
         row.append(copy, button("开始模拟", () => start(entry.id, exam.id, "", [], exam.id), "button-primary")); list.append(row);
       }
     }
@@ -183,11 +186,13 @@
     // A listening unit with no question groups is a listen-only resource (audio + transcript);
     // the learner answers from the paper book, so it is never auto-graded.
     if (unit.skill === "listening" && !(unit.groups && unit.groups.length)) {
-      text.append(el("h3", unit.title), el("p", `Section ${unit.part} · 听音资源（题目见纸质书，不作答、不判分） · 约 ${unit.minutes || 0} 分钟 · ${statusNames[source.status] || "待核验素材"}`));
+      text.append(el("h3", unit.title), el("p", `Section ${unit.part} · 听音资源（题目见纸质书，不作答、不判分） · 约 ${unit.minutes || 0} 分钟 · ${provenanceLabel(unit, source)}`));
+      text.append(window.ELPLibrary.provenanceDetails(unit, source));
       row.append(text, button("开始收听", action, "button-primary")); return row;
     }
     const count = unit.groups.reduce((sum, group) => sum + group.questions.length, 0);
-    text.append(el("h3", unit.title), el("p", `${unit.skill === "listening" ? `Section ${unit.part}` : unit.part === "academic" ? "学术类" : "培训类"} · ${count} 个答题项 · 约 ${unit.minutes || 20} 分钟 · ${[...new Set(unit.groups.map(group => kindNames[group.kind]))].join(" / ")} · ${statusNames[source.status]}`));
+    text.append(el("h3", unit.title), el("p", `${unit.skill === "listening" ? `Section ${unit.part}` : unit.part === "academic" ? "学术类" : "培训类"} · ${count} 个答题项 · 约 ${unit.minutes || 20} 分钟 · ${[...new Set(unit.groups.map(group => kindNames[group.kind]))].join(" / ")} · ${provenanceLabel(unit, source)}`));
+    text.append(window.ELPLibrary.provenanceDetails(unit, source));
     row.append(text, button("开始练习", action, "button-primary")); return row;
   }
   async function catalogue(token) {
@@ -201,7 +206,7 @@
     const render = () => {
       list.replaceChildren();
       const query = search.value.trim().toLowerCase();
-      for (const item of entries.filter(item => `${item.unit.title} ${item.source.name}`.toLowerCase().includes(query))) {
+      for (const item of entries.filter(item => `${item.unit.title} ${item.source.name} ${provenanceLabel(item.unit, item.source)}`.toLowerCase().includes(query))) {
         const listenOnly = item.unit.skill === "listening" && !(item.unit.groups && item.unit.groups.length);
         const open = listenOnly ? () => go(`${activeSkill}/listen/${item.packId}/${item.unit.id}`) : () => start(item.packId, item.unit.id);
         list.append(unitCard(item.unit, item.source, open));
@@ -363,7 +368,7 @@
     if (record.status === "submitted") return go(`${activeSkill}/report/${id}`);
     const s = { record, unit, directoryId: window.ELPLibrary.directoryId, version: 0, savedVersion: 0, queue: Promise.resolve(), paused: false, tick: Date.now() }; session = s;
     const simulation = record.mode === "simulation";
-    const top = shell(unit.title, `${statusNames[data.source.status]} · ${record.reviewOf ? "重练记录" : "首次作答"} · ${simulation ? `整套模拟 ${unit.minutes} 分钟 · 计时持续进行` : unit.skill === "listening" ? `Section ${unit.part} · 可暂停回放` : `建议 ${unit.minutes || 20} 分钟`}`);
+    const top = shell(unit.title, `${provenanceLabel(unit, data.source)} · ${record.reviewOf ? "重练记录" : "首次作答"} · ${simulation ? `整套模拟 ${unit.minutes} 分钟 · 计时持续进行` : unit.skill === "listening" ? `Section ${unit.part} · 可暂停回放` : `建议 ${unit.minutes || 20} 分钟`}`);
     root().classList.add("objective-active");
     const actions = el("div", undefined, "button-row objective-session-actions");
     const timer = el("strong", clock(record.elapsedSeconds), "objective-timer"); timer.id = "objectiveTimer";
@@ -474,7 +479,7 @@
     const unit = scopedUnit(record.examId ? await api(`attempts/${id}/question`) : data.units.find(unit => unit.id === record.unitId), record);
     if (token !== generation) return;
     if (unit.skill !== activeSkill) throw new Error(`${skillName()}记录不存在`);
-    const top = shell(unit.title, `${record.reviewOf ? "重练" : "首次作答"} · ${clock(record.elapsedSeconds)} · ${statusNames[data.source.status]}`);
+    const top = shell(unit.title, `${record.reviewOf ? "重练" : "首次作答"} · ${clock(record.elapsedSeconds)} · ${provenanceLabel(unit, data.source)}`);
     root().classList.add("objective-report");
     const actions = el("div", undefined, "button-row"); actions.append(button("返回概览", () => go(activeSkill), "button-quiet"), button(record.examId ? "再次模拟" : unit.skill === "reading" ? "重练本篇" : "重练本段", () => start(record.packId, record.unitId, record.id, [], record.examId || ""), "button-primary")); top.append(actions);
     const wrong = score.items.filter(item => !item.correct).map(item => item.id);
@@ -549,7 +554,7 @@
     const unit = data.units.find(item => item.id === unitId);
     if (token !== generation) return;
     if (!unit || unit.skill !== "listening") throw new Error("听力资源不存在");
-    const top = shell(unit.title, `${statusNames[data.source.status] || "待核验素材"} · 听音资源 · 题目见纸质书，不作答、不判分`);
+    const top = shell(unit.title, `${provenanceLabel(unit, data.source)} · 听音资源 · 题目见纸质书，不作答、不判分`);
     top.append(button("返回概览", () => go(activeSkill), "button-quiet"));
     root().append(audioPanel(unit, null, `Section ${unit.part} · 听音`));
     const details = el("details", undefined, "objective-source-disclosure");

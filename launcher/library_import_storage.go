@@ -64,8 +64,8 @@ func streamImportFile(reader io.Reader, directory string, limit int64) (name, di
 }
 
 func (preview *bankImportPreview) readMedia(reader io.Reader, size int64) error {
-	buffered := bufio.NewReader(reader)
-	prefix, err := buffered.Peek(512)
+	buffered := bufio.NewReaderSize(reader, 8192)
+	prefix, err := buffered.Peek(8192)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}

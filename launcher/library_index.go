@@ -87,14 +87,20 @@ func (index *libraryReadIndex) scanPacks() ([]any, error) {
 			index.packReads++
 			entry = packIndexEntry{Stamp: stamp(info), Units: map[string]string{}, Exams: map[string]string{}}
 			skills := map[string]int{}
+			unitIDs := make([]string, 0, len(pack.Units))
+			visibleIDs := make([]string, 0, len(pack.Units))
 			for _, unit := range pack.Units {
+				unitIDs = append(unitIDs, unit.ID)
+				if !unit.Hidden {
+					visibleIDs = append(visibleIDs, unit.ID)
+				}
 				skills[unit.Skill]++
 				entry.Units[unit.ID] = unit.Skill
 			}
 			for _, exam := range pack.Exams {
 				entry.Exams[exam.ID] = exam.Skill
 			}
-			entry.View = map[string]any{"id": id, "title": pack.Title, "source": pack.Source, "count": len(pack.Units), "skills": skills, "importedAt": info.ModTime().UTC().Format(time.RFC3339Nano)}
+			entry.View = map[string]any{"id": id, "title": pack.Title, "source": pack.Source, "count": len(pack.Units), "unitIds": unitIDs, "visibleUnitIds": visibleIDs, "skills": skills, "importedAt": info.ModTime().UTC().Format(time.RFC3339Nano)}
 			index.packs[id] = entry
 		}
 		seen[id] = true

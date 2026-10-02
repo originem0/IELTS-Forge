@@ -24,7 +24,7 @@
     plan: ["GOAL TO ACTION", "学习计划"],
     mistakes: ["REVIEW & IMPROVE", "错题与单词"],
     settings: ["PRIVATE BY DEFAULT", "AI 与数据设置"],
-    guide: ["START HERE", "使用指南"],
+    guide: ["START HERE", "雅思入门指南"],
     review: ["QUESTION REVIEW", "批改报告"]
   };
 
@@ -3256,7 +3256,11 @@
   async function uploadAuthoredImage(src) {
     // Authored prompt images are WebP data URLs (or study-media URLs); copy their bytes into the
     // library media store so a bank unit can reference them by content id like any imported pack.
-    const blob = await (await fetch(src)).blob();
+    // Inline images are local bytes; fetching data: URLs violates connect-src 'self'.
+    const inline = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(src);
+    const blob = inline
+      ? new Blob([Uint8Array.from(atob(inline[2]), char => char.charCodeAt(0))], { type: inline[1] })
+      : await (await fetch(src)).blob();
     const saved = await window.ELPLibrary.request("media", { method: "POST", headers: { "Content-Type": blob.type || "image/webp" }, body: blob });
     return saved.id;
   }

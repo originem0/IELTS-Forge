@@ -8,26 +8,32 @@ const authoredUnits = (page, skill) => page.evaluate(async skill => {
   const units = await window.ELPLibrary.listUnits(skill);
   return units.filter(item => item.source.name === '我的题目').map(item => item.unit);
 }, skill);
+const saveToBank = async (page, selector) => {
+  const saved = page.waitForResponse(response => response.url().endsWith('/api/library/packs') && response.request().method() === 'POST');
+  await page.locator(selector).click();
+  const response = await saved.catch(async error => { throw new Error(`${error.message}; visible notice: ${await page.locator('#toast').textContent()}`); });
+  assert.equal(response.status(), 201, await response.text());
+};
 
 module.exports = async function testAuthoredBank(page) {
   // Writing Task 2 (text only): the default type after 新建练习.
   await page.locator('.nav-item[data-route="writing"]').click();
   await page.locator('#newWriting').click();
   await page.locator('#writingPrompt').fill('Some people think children should learn history at school. Discuss.');
-  await page.locator('#saveWritingToBank').click();
-  await page.waitForFunction(async () => (await window.ELPLibrary.listUnits('writing')).some(item => item.source.name === '我的题目' && item.unit.part === 'Task-2'));
+  await saveToBank(page, '#saveWritingToBank');
   const task2 = (await authoredUnits(page, 'writing')).find(unit => unit.part === 'Task-2');
   assert.match(task2.prompt, /children should learn history/, 'authored Task 2 prompt not saved');
 
   // Writing Task 1 Academic requires a figure; saving copies it into the library media store.
+  await page.locator('.nav-item[data-route="writing"]').click();
   await page.locator('#newWriting').click();
   await page.locator('[data-writing-type="Task 1 Academic"]').click();
   await page.locator('#writingPrompt').fill('The chart shows library visits by year.');
   await page.locator('#writingPromptImageInput').setInputFiles({ name: 'chart.png', mimeType: 'image/png', buffer: Buffer.from(PNG, 'base64') });
   await page.locator('#writingPromptImagePreview img').waitFor();
-  await page.locator('#saveWritingToBank').click();
-  await page.waitForFunction(async () => (await window.ELPLibrary.listUnits('writing')).some(item => item.source.name === '我的题目' && item.unit.part === 'Task-1-Academic' && (item.unit.images || []).length));
+  await saveToBank(page, '#saveWritingToBank');
   const task1 = (await authoredUnits(page, 'writing')).find(unit => unit.part === 'Task-1-Academic');
+  assert.ok(task1, 'saved Task 1 must be visible in the authored bank');
   assert.ok(/^[a-f0-9]{64}\.webp$/.test(task1.images[0]), 'authored Task 1 figure was not stored as library media');
   assert.equal(await page.evaluate(id => fetch(`/api/library/media/${id}`).then(response => response.ok), task1.images[0]), true, 'authored Task 1 figure is not retrievable');
 
@@ -35,8 +41,7 @@ module.exports = async function testAuthoredBank(page) {
   await page.locator('.nav-item[data-route="speaking"]').click();
   await page.locator('#newSpeaking').click();
   await page.locator('#speakingPrompt').fill('Describe your hometown and explain why you like it.');
-  await page.locator('#saveSpeakingToBank').click();
-  await page.waitForFunction(async () => (await window.ELPLibrary.listUnits('speaking')).some(item => item.source.name === '我的题目' && item.unit.part === 'p1'));
+  await saveToBank(page, '#saveSpeakingToBank');
   const speaking = (await authoredUnits(page, 'speaking')).find(unit => unit.part === 'p1');
   assert.match(speaking.prompt, /hometown/, 'authored speaking prompt not saved');
   assert.equal(speaking.images, undefined, 'speaking units must not carry images');

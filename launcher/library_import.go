@@ -19,7 +19,9 @@ import (
 	"time"
 )
 
-const maxLibraryImport = 256 << 20
+// Complete multi-year libraries contain several hundred MB of original audio.
+// Multipart and media stay on disk; each attachment still has a 128 MiB limit.
+const maxLibraryImport = 1 << 30
 
 type bankImportPack struct {
 	Pack     libraryPack
@@ -68,7 +70,43 @@ func libraryMediaExtension(raw []byte) string {
 	case "image/webp":
 		return "webp"
 	}
+	if isUntaggedMP3(raw) {
+		return "mp3"
+	}
 	return ""
+}
+
+// Go's HTTP sniffer only recognises MP3 with an ID3 tag. Require two coherent
+// Layer III frame headers at the calculated boundary, not just an FF sync byte.
+// Detection never rewrites tags or audio, so existing content IDs stay valid.
+func isUntaggedMP3(raw []byte) bool {
+	frame := func(b []byte) (int, int, int) {
+		if len(b) < 4 || b[0] != 0xff || b[1]&0xe0 != 0xe0 || (b[1]>>1)&3 != 1 || b[3]&3 == 2 {
+			return 0, 0, 0
+		}
+		version, rate, frequency := int((b[1]>>3)&3), int(b[2]>>4), int((b[2]>>2)&3)
+		if version == 1 || rate == 0 || rate == 15 || frequency == 3 {
+			return 0, 0, 0
+		}
+		sampleRate := []int{44100, 48000, 32000}[frequency]
+		bitrates := []int{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320}
+		coefficient := 144000
+		if version != 3 {
+			bitrates = []int{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160}
+			sampleRate /= 2
+			coefficient = 72000
+			if version == 0 {
+				sampleRate /= 2
+			}
+		}
+		return coefficient*bitrates[rate]/sampleRate + int((b[2]>>1)&1), version, sampleRate
+	}
+	size, version, frequency := frame(raw)
+	if size == 0 || len(raw) < size+4 {
+		return false
+	}
+	nextSize, nextVersion, nextFrequency := frame(raw[size:])
+	return nextSize != 0 && nextVersion == version && nextFrequency == frequency
 }
 
 func (preview *bankImportPreview) readFile(name string, modified int64, size int64, reader io.Reader) error {
@@ -106,6 +144,7 @@ func (preview *bankImportPreview) readFile(name string, modified int64, size int
 		if err := decoder.Decode(&pack); err != nil {
 			return fmt.Errorf("题库文件无法识别：%s", path.Base(name))
 		}
+		completeLibraryProvenance(&pack)
 		if err := validatePack(pack); err != nil {
 			return fmt.Errorf("%s：%s", pack.Title, err)
 		}
@@ -140,10 +179,10 @@ func (preview *bankImportPreview) readZIP(reader io.ReaderAt, size int64) error 
 		if path.Base(name) == backupManifestName {
 			return errors.New("这是学习档案备份，请到 AI 与数据设置中恢复备份")
 		}
-		total += file.UncompressedSize64
-		if total > maxLibraryImport {
-			return errors.New("解压内容超过 256 MB，请选择整理后的题库包")
+		if file.UncompressedSize64 > maxLibraryImport-total {
+			return errors.New("解压内容超过 1 GB，请拆分题库包")
 		}
+		total += file.UncompressedSize64
 	}
 	for _, file := range archive.File {
 		if file.FileInfo().IsDir() {
@@ -203,9 +242,12 @@ func (s *diskStore) validateImport(preview *bankImportPreview, directoryID strin
 
 func registerLibraryImportAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/library/import/preview", func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxLibraryImport)
+		// Large local archives need more than the server's normal 15-second
+		// body deadline on slower disks. Keep the relaxed deadline route-local.
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(10 * time.Minute))
+		r.Body = http.MaxBytesReader(w, r.Body, maxLibraryImport+(8<<20))
 		if err := r.ParseMultipartForm(8 << 20); err != nil {
-			writeError(w, 400, "无法读取文件，导入总大小不能超过 256 MB")
+			writeError(w, 400, "无法读取文件，导入总大小不能超过 1 GB")
 			return
 		}
 		defer r.MultipartForm.RemoveAll()
@@ -213,6 +255,14 @@ func registerLibraryImportAPI(mux *http.ServeMux) {
 		if len(files) == 0 || len(files) > 5000 {
 			writeError(w, 400, "请选择题库 ZIP 或文件夹")
 			return
+		}
+		var uploadSize int64
+		for _, file := range files {
+			if file.Size < 0 || file.Size > maxLibraryImport-uploadSize {
+				writeError(w, 400, "导入总大小不能超过 1 GB")
+				return
+			}
+			uploadSize += file.Size
 		}
 		var modified []int64
 		_ = json.Unmarshal([]byte(r.FormValue("modified")), &modified)

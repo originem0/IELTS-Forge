@@ -146,12 +146,27 @@ class ConverterTests(unittest.TestCase):
             units = {u["id"]: u for u in converter.convert_writing(source, out)}
             self.assertEqual(units["a"]["part"], "Task-1-Academic")
             self.assertEqual(units["d"]["part"], "Task-1-General")
+            self.assertNotIn("images", units["d"], "a letter must not inherit a neighbouring chart")
             self.assertTrue(units["a"]["images"][0].endswith(".jpg"))
             self.assertTrue((out / units["a"]["images"][0]).is_file())
             self.assertEqual(units["b"]["part"], "Task-2")
             # An image-based Task 1 with no real figure is skipped (the user adds a complete one via
             # in-app authoring with its screenshot); it is never emitted as a text-only guess.
             self.assertNotIn("c", units)
+
+    def test_general_letters_do_not_require_images(self):
+        prompt = "Write a letter to your friend.\n- describe the event\n- explain the change\n- suggest a time\nDear Alex,"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory); source = root / "src"; source.mkdir(); out = root / "out"; out.mkdir()
+            (source / "letters.json").write_text(json.dumps({"tasks": [
+                {"id": "letter", "task_number": 1, "title": "Invitation", "prompt": prompt},
+                {"id": "explicit", "task_number": 1, "title": "Invitation", "task_type": "Task-1-General", "prompt": prompt},
+                {"id": "chart", "task_number": 1, "title": "General trends in sales", "prompt": "Summarise the graph."}
+            ]}), encoding="utf8")
+            units = converter.convert_writing(source, out)
+            self.assertEqual({unit["id"] for unit in units}, {"letter", "explicit"})
+            self.assertTrue(all(unit["part"] == "Task-1-General" and unit["minutes"] == 20 and unit["prompt"] == prompt for unit in units))
+            self.assertTrue(all("images" not in unit for unit in units))
 
     def test_liz_writing_extracts_blockquote_task2_prompts(self):
         html = ("<html><body><p>intro, not a question</p>"
