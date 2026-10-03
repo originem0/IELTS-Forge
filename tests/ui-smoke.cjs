@@ -28,7 +28,7 @@ const server = http.createServer(async (req, res) => {
       const request = JSON.parse(body);
       if (request.output_contract !== 'study-plan-json-v1') { res.statusCode = 400; res.end(JSON.stringify({error:'unexpected synthetic contract'})); return; }
       planAttempts += 1;
-      if (planAttempts === 1) { res.statusCode = 502; res.end(JSON.stringify({error:'模型服务暂时不可用'})); return; }
+      if (planAttempts === 1) { res.end(JSON.stringify({content:'invalid plan JSON',attempts:1})); return; }
        const day = {writing:1,speaking:1,reading:1,listening:1,writingReview:1,writingRewrite:1,speakingReview:1,readingReview:1,listeningReview:1,languageMinutes:15,reviewMinutes:30,note:'synthetic day'};
       const phases = ['重点强化','冲刺与调整'].map(name => ({name,focus:'synthetic focus',days:Array.from({length:7},()=>({...day}))}));
       res.end(JSON.stringify({content:JSON.stringify({summary:'synthetic retried plan',priorities:['review'],phases})}));
@@ -243,7 +243,7 @@ const server = http.createServer(async (req, res) => {
     await page.locator('#planEditor > summary').click();
     await page.locator('#generateAiPlan').click();
     await page.waitForFunction(() => document.querySelector('#planResult').textContent.includes('AI 已生成覆盖'));
-    assert.equal(planAttempts,2,'one plan action retries one transient DeepSeek response automatically');
+    assert.equal(planAttempts,2,'one plan action retries one provider-format failure automatically');
     assert.equal(data.studyPlan.source,'ai');
     assert.equal(data.studyPlan.summary,'synthetic retried plan');
     await page.locator('#planEditor > summary').click();
@@ -263,7 +263,9 @@ const server = http.createServer(async (req, res) => {
     assert.equal(await page.locator('#todayPlanSummary .today-module-summary').count(), 4, 'home shows all four skills');
     const completion=await page.locator('#todayPlanSummary .today-module-summary strong').allTextContents();
     assert.match(completion[0],/^1\//);assert.match(completion[1],/^1\//);
-    assert.deepEqual(completion.slice(2),['0/0','0/0'],'do not manufacture reading/listening reviews without source material');
+    assert.ok(completion.slice(2).every(value=>/^0\/[01]$/.test(value)),'a weekly main task may use reading or listening');
+    const objectiveReviews=Object.values(data.learning?.days || {}).flatMap(day=>day.tasks || []).filter(task=>['reading','listening'].includes(task.skill) && task.kind!=='reading' && task.kind!=='listening');
+    assert.equal(objectiveReviews.length,0,'do not manufacture reading/listening reviews without source material');
     assert.equal(await page.locator('#todayPlanDetails').getAttribute('open'), null, 'task details stay collapsed by default');
     await page.screenshot({path:path.join(artifactRoot, 'elp-home-with-plan.png'), fullPage:true, animations:'disabled'});
     await page.locator('.nav-item[data-route="mistakes"]').click();
