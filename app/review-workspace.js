@@ -4,7 +4,7 @@
  if(root) root.ELPReview=api;
 })(typeof window === "object" ? window : null, () => {
  "use strict";
- function create({ getContext, $, practiceTitle, showToast, saveReviewCorrection, correctionKey }) {
+ function create({ getContext, $, practiceTitle, showToast, saveReviewCorrection, correctionKey, renderLanguageUse }) {
   let reviewWorkspaceAudioUrl = null;
   function renderAiFeedback(output, content) {
     if (window.renderReviewMarkdown) window.renderReviewMarkdown(output, content);
@@ -146,6 +146,9 @@
       overviewElement: $("#reviewOverviewSummary")
     });
     else renderAiFeedback($("#reviewWorkspaceFeedback"), feedback);
+    let usage = document.getElementById("reviewLanguageUse");
+    if (!usage) { usage = document.createElement("div"); usage.id = "reviewLanguageUse"; usage.className = "study-language-use"; $("#reviewWorkspaceFeedback").append(usage); }
+    renderLanguageUse?.(usage, module, item);
   }
 
   function refreshReviewWorkspace(module, id) {

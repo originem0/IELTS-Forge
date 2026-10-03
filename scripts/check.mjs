@@ -2,7 +2,7 @@ import {readdirSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 const commands = [
   ...readdirSync('app').filter(name => name.endsWith('.js')).map(name => [process.execPath, ['--check', `app/${name}`]]),
-  ...['static-smoke.mjs','windows-platform-smoke.mjs','speaking-writing-regression.mjs','plan-budget.cjs','practice-lifecycle.cjs','storage-client.cjs'].map(name => [process.execPath,[`tests/${name}`]]),
+  ...['static-smoke.mjs','windows-platform-smoke.mjs','speaking-writing-regression.mjs','whisper-boundaries.cjs','plan-budget.cjs','study-engine.cjs','study-coordinator.cjs','practice-lifecycle.cjs','storage-client.cjs','ai-budget.cjs'].map(name => [process.execPath,[`tests/${name}`]]),
   ['python',['tests/question-bank-converter.py']]
 ];
 for (const [command,args] of commands) {

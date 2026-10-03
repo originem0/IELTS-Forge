@@ -6,9 +6,9 @@
   <meta name="theme-color" content="#16352f">
   <meta name="description" content="English Learning Path：本地优先、可自行导入材料的英语学习中心。">
   <title>English Learning Path · 英语学习路径</title>
-  <link rel="stylesheet" href="styles.css?v=20261002-guide">
+  <link rel="stylesheet" href="styles.css?v=20261002-study1">
   <link rel="stylesheet" href="library.css?v=20260930a">
-  <link rel="stylesheet" href="desktop.css?v=20261001a">
+  <link rel="stylesheet" href="desktop.css?v=20261003-history">
 </head>
 <body>
   <div class="app-shell">
@@ -16,7 +16,6 @@
       <button id="sidebarCollapse" class="sidebar-collapse" type="button" aria-label="收起导航栏" title="收起导航栏">‹</button>
       <a class="brand" href="#home" data-route="home" aria-label="返回首页">
         <span class="brand-mark">EL</span>
-        <span class="brand-copy"><strong>English Learning Path</strong><small>学习中心</small></span>
       </a>
       <nav class="nav-list">
         <button class="nav-item is-active" data-route="home" title="学习概览"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3Z M9 20v-7h6v7"/></svg><span class="nav-label">学习概览</span></button>
@@ -43,10 +42,15 @@
           <div class="eyebrow" id="pageEyebrow">TODAY'S PATH</div>
           <h1 id="pageTitle">学习概览</h1>
         </div>
+        <div class="page-actions hidden" data-page-actions="writing"><button id="newWriting" class="button button-primary" type="button">＋ 新建练习</button></div>
+        <div class="page-actions hidden" data-page-actions="speaking"><button id="newSpeaking" class="button button-primary" type="button">＋ 新建练习</button></div>
+        <div class="page-actions hidden" data-page-actions="reading"><button class="button button-primary" data-route="reading/new">＋ 新建练习</button><button class="button button-secondary" data-route="reading/mock">整套模拟</button></div>
+        <div class="page-actions hidden" data-page-actions="listening"><button class="button button-primary" data-route="listening/new">＋ 新建练习</button><button class="button button-secondary" data-route="listening/mock">整套模拟</button></div>
+        <div class="page-actions hidden" data-page-actions="language"><button id="generateLanguageBank" class="button button-primary ai-required">生成 / 更新我的语料库</button></div>
+        <div class="page-actions hidden" data-page-actions="library"><button id="toggleLibraryImport" type="button" class="button button-primary" aria-expanded="false" aria-controls="libraryImportPanel">导入题库</button><button id="libraryReturn" type="button" class="button button-secondary hidden">返回练习</button></div>
         <div class="topbar-actions">
           <button id="storageStatusBadge" class="status-badge status-off storage-badge" data-route="settings">数据目录连接中</button>
-          <span id="aiStatusBadge" class="status-badge status-off">AI 未连接</span>
-          <button class="button button-quiet" data-route="settings">配置 AI</button>
+          <button id="aiStatusBadge" class="status-badge status-off" data-route="settings" title="AI 连接设置">AI 未连接</button>
           <button id="exitApp" class="button button-quiet" title="关闭本地启动器">退出</button>
         </div>
       </header>
@@ -57,28 +61,28 @@
             <span class="kicker">ONE PRACTICE AT A TIME</span>
             <h2 id="homeHeading">开始今天的练习</h2>
             <p id="homeIntro">第一次来？从 3 道原创阅读热身题开始。无需题库或 AI，做完就能核对答案。</p>
+          </div>
             <div class="button-row">
               <button id="heroPrimaryAction" type="button" class="button button-primary">开始第一次练习</button>
               <button class="button button-secondary" data-route="guide">雅思入门指南</button>
             </div>
-          </div>
-        </div>
-
-        <p id="homeEmptyHistory" class="muted">完成第一次练习后，这里会记录你的学习进度。</p>
-        <div id="homeMetrics" class="metric-grid hidden">
-          <article class="metric-card"><span>练习总数</span><strong id="metricTotal">0</strong><small>保存在本机</small></article>
-          <article class="metric-card"><span>写作篇数</span><strong id="metricWriting">0</strong><small>草稿与历史</small></article>
-          <article class="metric-card"><span>口语次数</span><strong id="metricSpeaking">0</strong><small>录音与文字稿</small></article>
-          <article class="metric-card"><span>阅读次数</span><strong id="metricReading">0</strong><small>含重练与模拟</small></article>
-          <article class="metric-card"><span>听力次数</span><strong id="metricListening">0</strong><small id="metricLibraryStatus">含重练与模拟</small></article>
-          <article class="metric-card"><span>连续学习</span><strong id="metricStreak">0</strong><small>天</small></article>
         </div>
 
         <section class="today-plan panel">
           <div class="panel-title"><div><span class="kicker">TODAY'S ACTIONS</span><h3>今日安排</h3><p id="todayPlanMeta">先练习也可以，计划随时再安排。</p></div><button class="button button-secondary" data-route="plan">安排学习时间</button></div>
           <div id="todayPlanSummary" class="today-plan-summary empty-state">尚未创建学习计划</div>
+          <details class="study-due-panel"><summary>今日复习 · 先用十分钟</summary><div id="dailyReviewQueue" class="study-queue"></div></details>
           <details id="todayPlanDetails" class="today-plan-details hidden"><summary>展开查看今日任务细节</summary><div id="todayPlanList" class="today-task-list"></div></details>
         </section>
+        <p id="homeEmptyHistory" class="muted">完成第一次练习后，这里会记录你的学习进度。</p>
+        <div id="homeMetrics" class="metric-grid hidden" aria-label="累计学习统计">
+          <article class="metric-card"><span>练习总数</span><strong id="metricTotal">0</strong><small>保存在本机</small></article>
+          <article class="metric-card"><span>写作</span><strong id="metricWriting">0</strong><small>篇</small></article>
+          <article class="metric-card"><span>口语</span><strong id="metricSpeaking">0</strong><small>次</small></article>
+          <article class="metric-card"><span>阅读</span><strong id="metricReading">0</strong><small>次</small></article>
+          <article class="metric-card"><span>听力</span><strong id="metricListening">0</strong><small id="metricLibraryStatus">含重练与模拟</small></article>
+          <article class="metric-card"><span>连续学习</span><strong id="metricStreak">0</strong><small>天</small></article>
+        </div>
 
       </section>
 
@@ -86,13 +90,11 @@
         <div class="writing-studio-shell">
           <aside class="writing-sidebar panel">
             <div class="writing-sidebar-heading"><div><span class="kicker">WRITEPATH</span><h3>写作记录</h3></div><span id="writingCount" class="count-pill">0</span></div>
-            <button id="newWriting" class="button button-primary writing-new-button"><span>＋</span> 新建练习</button>
             <div class="history-filters" role="group" aria-label="筛选写作记录"><button class="is-selected" type="button" data-writing-filter="all">全部</button><button type="button" data-writing-filter="task1">Task 1</button><button type="button" data-writing-filter="task2">Task 2</button></div>
             <div id="writingHistory" class="library-list empty-state">还没有写作记录</div>
           </aside>
           <div class="writing-main">
             <section id="writingOverviewView" class="practice-overview panel">
-              <header class="practice-overview-hero"><div><span class="kicker">WRITING STUDIO</span><h2>今天的写作重点</h2><p>先回忆少量语料，再决定是否开始一篇新练习。</p></div></header>
               <div id="writingOverviewWelcome" class="overview-welcome"><p>新建练习，或从记录继续上次的作文。</p></div>
               <section class="daily-writing-language" aria-labelledby="dailyWritingLanguageTitle">
                 <header><div><span class="kicker">RECALL & USE</span><h3 id="dailyWritingLanguageTitle">先回忆，再用进作文</h3></div><p>看中文提示，用英文表达，再揭晓参考。挑一条自然使用即可。</p></header>
@@ -135,7 +137,7 @@
                 <article class="writing-workspace-card writing-question-card"><header><span>题目</span><button id="writingFocusMode" class="button button-quiet focus-entry">专注答题</button></header><div id="writingSessionQuestion" class="writing-session-question"></div></article>
                 <article class="writing-workspace-card writing-answer-card"><header><div><span>作答</span><small id="writingAnswerHint">至少 250 英文词</small></div><div><strong id="wordCount">0</strong> 词</div></header><textarea id="writingEssay" aria-label="写作答案" placeholder="Start writing here..." spellcheck="true"></textarea></article>
               </div>
-              <div id="writingCompletion" class="practice-completion hidden"><h3>这一篇已完成</h3><p>先检查有没有回应题目、给出理由和例子，再核对一处表达。可以继续修改，也可以按需获取 AI 反馈。</p><p id="completedLanguageReminder" class="practice-language-hint hidden"></p><details><summary>不用 AI，也可以先这样复盘</summary><ol><li>圈出最直接回答题目的句子。</li><li>检查每个观点后是否有理由或例子。</li><li>选一句重新表达，再和原句比较。</li></ol></details></div>
+              <div id="writingCompletion" class="practice-completion hidden"><h3>这一篇已完成</h3><p>先检查有没有回应题目、给出理由和例子，再核对一处表达。可以继续修改，也可以按需获取 AI 反馈。</p><p id="completedLanguageReminder" class="practice-language-hint hidden"></p><div id="writingLanguageUse" class="study-language-use hidden"></div><details><summary>不用 AI，也可以先这样复盘</summary><ol><li>圈出最直接回答题目的句子。</li><li>检查每个观点后是否有理由或例子。</li><li>选一句重新表达，再和原句比较。</li></ol></details></div>
               <div class="writing-session-footer"><span id="saveStatus">内容会自动保存到本机</span><div class="button-row writing-actions"><button id="reviewWriting" class="button button-primary ai-required">AI 写作反馈</button><button id="deleteWriting" class="button button-danger-quiet hidden">删除记录</button></div></div>
               <div id="writingReview" class="ai-output hidden"></div>
               <section id="writingChartCheck" class="panel writing-chart-check hidden" aria-labelledby="writingChartTitle">
@@ -155,13 +157,11 @@
         <div class="speaking-studio-shell">
           <aside class="writing-sidebar speaking-history-sidebar panel">
             <div class="writing-sidebar-heading"><div><span class="kicker">SPEAKPATH</span><h3>口语记录</h3></div><span id="speakingCount" class="count-pill">0</span></div>
-            <button id="newSpeaking" class="button button-primary writing-new-button"><span>＋</span> 新建练习</button>
             <div class="history-filters speaking-history-filters" role="group" aria-label="筛选口语记录"><button class="is-selected" type="button" data-speaking-filter="all">全部</button><button type="button" data-speaking-filter="p1">Part 1</button><button type="button" data-speaking-filter="p2">Part 2</button><button type="button" data-speaking-filter="p3">Part 3</button><button type="button" data-speaking-filter="free">自由</button></div>
             <div id="speakingHistory" class="library-list empty-state">还没有口语练习记录</div>
           </aside>
           <div class="speaking-main">
             <section id="speakingOverviewView" class="practice-overview panel">
-              <header class="practice-overview-hero"><div><span class="kicker">SPEAKING ROOM</span><h2>今天的口语重点</h2><p>先热身和回忆表达；需要练习时，再从左侧新建一次录音。</p></div></header>
               <div id="speakingOverviewWelcome" class="overview-welcome"><p>新建练习，或从记录回听上次的回答。</p></div>
               <section class="daily-speaking-language" aria-labelledby="dailySpeakingLanguageTitle"><header><div><span class="kicker">RECALL & SAY</span><h3 id="dailySpeakingLanguageTitle">先回忆，再说出来</h3></div><p>看提示想一句英文，写下或说出自己的例子，再查看参考。</p></header><div id="dailySpeakingLanguage" class="daily-language-cards"></div></section>
               <section class="overview-plan"><header><span class="kicker">TODAY'S PLAN</span><h3>今日口语安排</h3></header><div id="speakingOverviewPlan" class="overview-plan-list"></div></section>
@@ -190,6 +190,8 @@
                 <div class="button-row transcription-actions"><button id="retryLocalTranscription" type="button" class="button button-secondary">重新转写本次录音</button><button id="cancelLocalTranscription" type="button" class="button button-quiet hidden">取消转写</button></div>
                 <textarea id="speakingTranscript" class="transcript-area" aria-label="口语回答文字稿" placeholder="录音后显示文字稿，也可以在这里输入回答。"></textarea>
                 <p id="speakingSaveStatus" class="autosave-status">录音、文字稿与修改会自动保存到本机</p>
+                <button id="finishSpeakingPractice" type="button" class="button button-secondary">完成这次回答</button>
+                <div id="speakingLanguageUse" class="study-language-use hidden"></div>
                 <div class="button-row speaking-actions"><button id="reviewSpeaking" class="button button-primary ai-required">AI 评价与修改</button><button id="deleteSpeaking" class="button button-danger-quiet hidden">删除记录</button></div>
                 <p id="speakingReviewHint" class="privacy-hint hidden">先回听核对文字，再获取反馈。<button type="button" class="button button-quiet" data-route="settings">连接 AI</button></p>
                 <div id="speakingReview" class="ai-output hidden"></div>
@@ -201,10 +203,7 @@
       </section>
 
       <section class="page" data-page="language">
-        <div class="page-intro panel compact-panel">
-          <div><span class="kicker">YOUR REUSABLE LANGUAGE</span><h2>个人语料库</h2><p>由你主动调用 AI，汇总当前本机已有和新增的答题记录。口语保留个人可迁移素材；写作按领域整理，并且每天只展示少量重点。</p></div>
-          <button id="generateLanguageBank" class="button button-primary ai-required">生成 / 更新我的语料库</button>
-        </div>
+        <details class="page-help"><summary>语料库使用说明</summary><p>由你主动调用 AI，整理已完成的真实作答。口语保留可迁移的个人素材，写作区分题型与用途；每天根据复习表现安排少量表达。</p></details>
         <div id="languageBankStatus" class="language-bank-status panel hidden" aria-live="polite"></div>
         <div class="language-tabs" role="tablist" aria-label="语料库类型">
           <button id="languageTabSpeaking" class="language-tab is-active" type="button" role="tab" aria-selected="true" data-language-tab="speaking"><span>口语语料</span><b id="languageTabSpeakingCount">0</b></button>
@@ -217,12 +216,13 @@
       </section>
 
       <section class="page" data-page="plan">
-        <div class="page-intro panel compact-panel"><div><span class="kicker">GOAL TO ACTION</span><h2>给练习和复盘留出时间</h2><p>先填目标和每天可用的时间。练习数量已有起点，可以稍后再调整。</p></div></div>
+        <details class="page-help"><summary>如何安排学习时间</summary><p>先填目标和每天可用的时间。练习数量已有起点，可以稍后再调整。</p></details>
         <div class="plan-layout">
           <section id="currentPlan" class="panel plan-card hidden">
             <div class="panel-title"><div><span class="kicker">YOUR PLAN</span><h3>当前学习安排</h3></div><span id="planSourceBadge" class="status-badge status-off">未创建</span></div>
             <div id="planSummary" class="plan-summary empty-state">填好目标后即可开始。</div>
             <div id="phasePlan" class="phase-plan"></div>
+            <p id="weeklyStudyEvidence" class="study-weekly-evidence"></p>
             <div class="button-row"><button class="button button-primary" data-route="home" type="button">开始今天的任务</button><button id="deletePlan" type="button" class="button button-danger-quiet hidden">删除当前计划</button></div>
           </section>
           <details id="planEditor" class="panel plan-editor" open><summary>设置目标与学习时间</summary>
@@ -255,17 +255,21 @@
             <div class="button-row"><button id="saveManualPlan" type="button" class="button button-primary">保存学习安排</button><button id="generateAiPlan" type="button" class="button button-secondary ai-required">请 AI 帮我安排</button></div>
             <div id="planResult" class="feedback-box hidden"></div>
           </form></details>
+          <details class="panel study-history"><summary>已完成的学习记录</summary><div id="studyHistory"></div></details>
         </div>
       </section>
 
       <section class="page" data-page="mistakes">
-        <div class="page-intro panel compact-panel"><div><span class="kicker">REVIEW & IMPROVE</span><h2>错题、复盘与单词本</h2><p>写作、口语和生词分别整理。可以粘贴文字，也可以在文本框中直接 Ctrl+V 粘贴剪贴板图片；所有内容只写入你绑定的本地数据文件。</p></div></div>
+        <details class="page-help"><summary>错题与单词使用说明</summary><p>写作、口语和生词分别整理。可以粘贴文字，也可以在文本框中直接 Ctrl+V 粘贴剪贴板图片；所有内容只写入你绑定的本地数据文件。</p></details>
         <div class="mistake-layout">
           <form id="mistakeForm" class="panel mistake-composer">
             <div class="panel-title"><div><span class="kicker">NEW NOTE</span><h3>新增错题 / 复盘</h3></div></div>
             <div class="field"><span id="mistakeModuleLabel">所属模块</span><input id="mistakeModule" type="hidden" value="writing"><div class="mistake-filters" role="group" aria-labelledby="mistakeModuleLabel"><button type="button" class="button button-secondary is-active" data-mistake-module="writing" aria-pressed="true">写作</button><button type="button" class="button button-quiet" data-mistake-module="speaking" aria-pressed="false">口语</button><button type="button" class="button button-quiet" data-mistake-module="vocabulary" aria-pressed="false">单词本</button></div></div>
             <label class="field"><span>标题 / 单词或短语</span><input id="mistakeTitle" type="text" placeholder="例如：同义替换没有识别 / sustainable"></label>
             <label class="field"><span>问题与优化 / 释义与例句</span><textarea id="mistakeText" rows="9" placeholder="错题可记录原因和下次优化；单词可记录释义、搭配和例句。复制截图后在这里按 Ctrl+V 即可附图。"></textarea></label>
+            <label id="notebookReviewOption" class="study-option"><input id="mistakeReviewEnabled" type="checkbox">加入到期复习，先回忆标题对应的内容</label>
+            <fieldset id="vocabularyPurpose" class="study-options hidden"><legend>单词用途</legend><label><input type="radio" name="vocabularyMode" value="receptive" checked>看见能懂</label><label><input type="radio" name="vocabularyMode" value="productive">主动说写</label></fieldset>
+            <label class="field"><span>回忆提示（选填，主动说写的单词必填）</span><input id="mistakeCue" type="text" placeholder="中文含义，或留空的英文语境"></label>
             <label class="button button-quiet file-button">选择图片<input id="mistakeImageInput" type="file" accept="image/*" multiple></label>
             <div id="mistakeImagePreview" class="mistake-image-preview empty-state">尚未添加图片</div>
             <div class="button-row"><button type="submit" class="button button-primary">保存到错题本</button><button id="resetMistakeForm" type="button" class="button button-quiet">清空编辑区</button></div>
@@ -283,7 +287,7 @@
                 <h4>原句</h4><p id="correctionStudyOriginal" class="correction-practice-original"></p>
                 <label class="field"><span>你的修改</span><textarea id="correctionStudyAttempt" rows="4" placeholder="先自己尝试改正，再查看参考修改。"></textarea></label>
                 <button id="revealCorrectionAnswer" type="button" class="button button-secondary">对照参考修改</button>
-                <div id="correctionStudyAnswer" class="hidden"><h4>参考修改</h4><p id="correctionStudyReference"></p><p id="correctionStudyReason"></p><p class="vocabulary-summary">表达不必完全相同，请按实际表现选择。</p></div>
+                <div id="correctionStudyAnswer" class="hidden"><h4>参考修改</h4><p id="correctionStudyReference"></p><div id="correctionStudyReferenceImages" class="mistake-images"></div><p id="correctionStudyReason"></p><p class="vocabulary-summary">表达不必完全相同，请按实际表现选择。</p></div>
                 <div id="correctionStudyRating" class="button-row hidden"><button type="button" class="button button-secondary" data-correction-rating="again" title="本轮再练">仍不会</button><button type="button" class="button button-secondary" data-correction-rating="hard" title="明天复习">需要提示</button><button type="button" class="button button-primary" data-correction-rating="good">独立改对</button></div>
               </div>
               <p id="correctionStudyStatus" role="status"></p>
@@ -295,6 +299,7 @@
               <div id="vocabularyStudyCard" class="vocabulary-study-card hidden">
                 <p id="vocabularyStudyProgress" aria-live="polite"></p>
                 <h3 id="vocabularyStudyWord"></h3>
+                <textarea id="vocabularyStudyAttempt" class="hidden" rows="2" aria-label="回忆英文单词" placeholder="先写出英文，再查看参考"></textarea>
                 <p class="vocabulary-recall-hint">先回忆释义和用法，再查看答案。</p>
                 <div id="vocabularyStudyAnswer" class="hidden"></div>
                 <button id="revealVocabularyAnswer" type="button" class="button button-secondary">显示释义与例句</button>
@@ -311,9 +316,7 @@
       <section class="page" data-page="listening"><div id="listeningWorkspace" aria-live="polite"></div></section>
 
       <section class="page" data-page="settings">
-        <div class="page-intro panel compact-panel">
-          <div><span class="kicker">PRIVATE BY DEFAULT</span><h2>AI 与数据设置</h2><p>基础功能无需 AI。只有完成连接测试后，写作与口语反馈按钮才会启用。</p></div>
-        </div>
+        <details class="page-help"><summary>连接与数据说明</summary><p>基础功能无需 AI。只有完成连接测试后，写作与口语反馈按钮才会启用。</p></details>
         <div class="settings-grid">
           <section class="panel settings-card storage-card">
             <div class="panel-title"><div><span class="kicker">PERMANENT LOCAL FILES</span><h3>永久本地数据目录</h3></div><span id="diskStatusBadge" class="status-badge status-off">连接中</span></div>
@@ -360,6 +363,7 @@
             <div class="stacked-actions"><button id="exportFullBackup" class="button button-primary" type="button">导出完整备份</button><label class="button button-secondary file-button">从完整备份恢复到新档案<input id="restoreFullBackup" type="file" accept=".zip,application/zip"></label></div>
             <p>完整 ZIP 包含学习档案、题库、媒体和听读记录，不含 API 凭据。恢复会建立并绑定一个新档案文件夹，原档案保留。</p>
             <p id="backupStatus" role="status" aria-live="polite"></p>
+            <button id="recoverStudyRecords" class="button button-secondary" type="button">检查并抢救损坏档案</button>
             <details><summary>旧版 JSON 档案与清理</summary><div class="stacked-actions"><button id="exportData" class="button button-secondary">导出写作、口语与学习档案</button><label class="button button-quiet file-button">导入学习档案备份<input id="importData" type="file" accept="application/json,.json"></label><button id="clearData" class="button button-danger-quiet">清空学习档案</button></div><p class="muted">旧版 JSON 和档案清理不包含独立的 library 题库、媒体与听读记录。</p></details>
           </div>
           <section class="panel settings-card"><h3>练习题库</h3><p>题库导入和已导入内容现在集中放在侧栏的题库页面。</p><button class="button button-secondary" data-route="library">打开题库</button></section>
@@ -367,9 +371,9 @@
       </section>
 
       <section class="page" data-page="library" id="libraryPage">
-        <header class="library-intro"><div><span class="kicker">YOUR NEXT PRACTICE STARTS HERE</span><h2 id="libraryHeading">选题与导入</h2><p>打开已导入的题库就能选题。新题库只需选择一次，配套附件自动识别。</p></div><button id="libraryReturn" type="button" class="button button-secondary hidden">返回练习</button></header>
-        <ol class="library-steps" aria-label="导入流程"><li class="is-current" data-import-step="1"><b>01</b><span>选择资料</span></li><li data-import-step="2"><b>02</b><span>确认题目</span></li><li data-import-step="3"><b>03</b><span>开始练习</span></li></ol>
-        <section class="panel library-import-panel">
+        <section class="panel library-installed"><div class="panel-title"><h2 id="libraryHeading">我的题库</h2><button id="refreshLibrary" type="button" class="button button-quiet">刷新</button></div><div id="libraryList" class="library-list"></div></section>
+        <section id="libraryImportPanel" class="panel library-import-panel hidden" aria-label="导入题库">
+          <ol class="library-steps" aria-label="导入流程"><li class="is-current" data-import-step="1"><b>01</b><span>选择资料</span></li><li data-import-step="2"><b>02</b><span>确认题目</span></li><li data-import-step="3"><b>03</b><span>开始练习</span></li></ol>
           <div id="libraryChoose">
             <div id="libraryDropZone" class="library-drop-zone">
               <span class="library-import-mark" aria-hidden="true">＋</span><h3>把题库 ZIP 拖到这里</h3><p>无需解压，也不用单独挑选音频和图片。</p>
@@ -383,7 +387,6 @@
           <div id="librarySuccess" class="hidden"></div>
           <p id="libraryStatus" role="status" aria-live="polite"></p>
         </section>
-        <section class="panel library-installed"><div class="panel-title"><div><span class="kicker">READY TO PRACTICE</span><h3>我的题库</h3></div><button id="refreshLibrary" type="button" class="button button-quiet">刷新</button></div><div id="libraryList" class="library-list"></div></section>
       </section>
 
       <section class="page" data-page="guide">
@@ -523,8 +526,10 @@
   <script src="whisper.js"></script>
   <script src="library.js?v=20260930a"></script>
   <script src="library-import.js?v=20260930b"></script>
-  <script src="plan-budget.js?v=20260930a"></script>
-  <script src="objective-practice.js?v=20261001a"></script>
+  <script src="study-engine.js?v=20261002-study1"></script>
+  <script src="plan-budget.js?v=20261002-study1"></script>
+  <script src="study-coordinator.js?v=20261002-study1"></script>
+  <script src="objective-practice.js?v=20261002-study1"></script>
   <script src="practice-lifecycle.js"></script>
   <script src="state-schema.js"></script>
   <script src="storage-client.js"></script>
@@ -533,6 +538,6 @@
   <script src="review-workspace.js"></script>
   <script src="ai-client.js"></script>
   <script src="ai-settings.js?v=20261001b"></script>
-  <script src="app.js?v=20261001a"></script>
+  <script src="app.js?v=20261002-study1"></script>
 </body>
 </html>

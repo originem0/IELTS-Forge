@@ -7,6 +7,8 @@ const mediaClient = createRequire(import.meta.url)('../app/media-client.js');
 const applyStateRequest = createRequire(import.meta.url)('./state-api-fixture.cjs');
 const practiceLifecycle = createRequire(import.meta.url)('../app/practice-lifecycle.js');
 const planBudget = createRequire(import.meta.url)('../app/plan-budget.js');
+const studyEngine = createRequire(import.meta.url)('../app/study-engine.js');
+const studyCoordinator = await readFile(new URL('../app/study-coordinator.js',import.meta.url),'utf8');
 
 const aiSource = await readFile(new URL('../app/ai-client.js',import.meta.url),'utf8');
 const reviewSource = await readFile(new URL('../app/review-workspace.js',import.meta.url),'utf8');
@@ -18,14 +20,18 @@ function harness(initialState, localWhisper) {
   const elements = new Map();
   let persisted = structuredClone(initialState || {writings:[],speaking:[],mistakes:[]});
   let failWrites = false;
+  let languageReply;
+  let writeGate;
   const chatRequests = [];
   const element = selector => {
     if (!elements.has(selector)) elements.set(selector, {
       value: '', textContent: '', innerHTML: '', src: '', disabled: false,
       dataset: {}, events: {}, classList: { add() {}, remove() {}, toggle() {} },
+      get children() { return new Proxy([], {get: (_, key) => /^\d+$/.test(String(key)) ? element(`${selector} child:${key}`) : 0}); },
       addEventListener(name, fn) { this.events[name] = fn; },
-      querySelectorAll() { return []; }, pause() {}, load() {}, focus() {}, scrollIntoView() {},
+      querySelectorAll() { return []; }, querySelector(child) { return child === '[data-jump-mistake]' ? null : element(`${selector} ${child}`); }, pause() {}, load() {}, focus() {}, scrollIntoView() {},
       removeAttribute(name) { this[name] = ''; },
+      replaceChildren() {}, append() {}, prepend() {}, remove() {}, setAttribute() {},
     });
     return elements.get(selector);
   };
@@ -66,9 +72,9 @@ function harness(initialState, localWhisper) {
     fixtureLoaded: value => { persisted = JSON.parse(JSON.stringify(value)); },
     Blob, Uint8Array, atob, structuredClone, AbortController, CustomEvent, FileReader: Reader,
     MediaRecorder: Recorder, URL: { createObjectURL: () => 'blob:test-audio', revokeObjectURL() {} },
-    window: { ELPStorage: {create: options => storageClient.create({...options,request:(...args)=>context.fetch(...args)})}, ELPMedia: mediaClient, ELPPractice: practiceLifecycle, localWhisper, ELPPlanBudget: planBudget, SpeechRecognition: Recognition, addEventListener() {}, dispatchEvent() {} },
+    window: { ELPStudy: studyEngine, ELPStorage: {...storageClient,create: options => storageClient.create({...options,request:(...args)=>context.fetch(...args)})}, ELPMedia: mediaClient, ELPPractice: practiceLifecycle, localWhisper, ELPPlanBudget: planBudget, SpeechRecognition: Recognition, addEventListener() {}, dispatchEvent() {} },
     navigator: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) } },
-    document: { querySelector: element, querySelectorAll: () => [] },
+    document: { querySelector: element, querySelectorAll: () => [], createElement: name => element(`created:${name}:${Math.random()}`) },
     location: { hash: '#unit-test' }, confirm: () => true,
     setTimeout(fn, ms) { const timer = setTimeout(fn, ms); timers.add(timer); return timer; }, clearTimeout,
     setInterval(fn, ms) { const timer = setInterval(fn, ms); timers.add(timer); return timer; }, clearInterval,
@@ -76,12 +82,16 @@ function harness(initialState, localWhisper) {
       if (url === '/api/ai/chat') {
         const request = JSON.parse(options.body);
         chatRequests.push(request);
+        const languagePayload = request.output_contract === 'personal-language-bank-json-v1' ? JSON.parse(request.messages.at(-1).content.slice(request.messages.at(-1).content.indexOf('\n{') + 1)) : null;
+        const languageItems = kind => (languagePayload?.[kind] || languagePayload?.batches?.flatMap(batch => batch[kind] || []) || []);
+        const languageKeys = kind => languageItems(kind).flatMap(item => item.sourceKeys || [item.sourceKey]).filter(Boolean);
         const content = request.output_contract === 'personal-language-bank-json-v1'
-          ? JSON.stringify({summary:'My bank',speaking:[{title:'Cycling',personalCore:'I enjoy cycling with friends.',reusableTopics:['hobbies'],expressions:['clear my mind'],answerFrames:['answer → reason → example']}],writing:[{domain:'education',collocations:['equal access｜平等的机会'],sentencePatterns:['It is important to...｜……十分重要']} ]})
-          : request.messages[0].content.startsWith('只提取 IELTS') ? JSON.stringify({description:'2000 年为 10，2010 年为 20，单位为百分比。',uncertainties:'无'}) : 'Synthetic feedback';
+          ? JSON.stringify(languageReply ? languageReply(languagePayload) : {summary:'My bank',speaking:languageItems('speaking').length ? [{title:'Cycling',personalCore:'I enjoy cycling with friends.',reusableTopics:['爱好'],expressions:['clear my mind｜理清思绪'],answerFrames:['One reason is...｜一个原因是……'],sourceKeys:languageKeys('speaking')}] : [],writing:languageItems('writing').length ? [{domain:'education',collocations:['equal access｜平等的机会'],sentencePatterns:['It is important to...｜……十分重要'],sourceKeys:languageKeys('writing')}] : []})
+          : request.messages[0].content.startsWith('只提取 IELTS') ? JSON.stringify({description:'2000 年为 10，2010 年为 20，单位为百分比。',uncertainties:'无'}) : request.output_contract?.startsWith('review-json-v1') ? JSON.stringify({topic:'练习主题',overall:6,range:[5.5,6.5],criteria:(request.output_contract.endsWith('speaking')?['FC','LR','GRA','P']:[request.output_contract.endsWith('task1')?'TA':'TR','CC','LR','GRA']).map(code=>({code,score:code==='P'?null:6,evidence:'具体文本证据'})),overview:'表达基本清楚。',transcript:'A spoken answer.',corrections:[],improvements:[],modelAnswer:'A model answer.',modelExplanation:'保留原意。',language:{collocations:[],sentencePatterns:[]}}) : 'Synthetic feedback';
         return { ok: true, json: async () => ({ content }) };
       }
       if (url === '/api/data' && ['PUT','PATCH'].includes(options?.method)) {
+        if (writeGate) await writeGate;
         if (failWrites) return { ok: false, json: async () => ({ error: 'test disk failure' }) };
         persisted = applyStateRequest(persisted,JSON.parse(options.body),options.method);
       }
@@ -91,9 +101,12 @@ function harness(initialState, localWhisper) {
   vm.runInContext(aiSource,context);
   vm.runInContext(reviewSource,context);
   vm.runInContext(assessmentSource,context);
+  vm.runInContext(studyCoordinator,context);
   vm.runInContext(source.replace(/  initialize\(\);\s*\}\)\(\);\s*$/, `
     globalThis.api = { calculateStreak, refreshTranscriptionStatus, transcribeLocalRecording, bindEvents, toggleRecording, saveWriting, saveSpeaking, loadSpeaking, newSpeaking, loadWriting, todayPlanTasks, normalizePlanDay, normalizeAiPlanDay, reviewWriting, reviewSpeaking, reviewLearnerContext, reviewTopicTitle, practiceTitle, generateLanguageBank, normalizeLanguageBank, languageBankSource,
-      enableAi() { aiConnected = true; },
+      startCorrectionStudy, startVocabularyStudy, rateCorrection, rateVocabulary, recallDrafts,
+      get correctionSession() { return correctionSession; }, get vocabularySession() { return vocabularySession; },
+      deleteWritingRecord, deleteSpeakingRecord, deleteSavedRecord, renderLanguageBank, enableAi() { aiConnected = true; },
       get busy() { return recordingBusy; }, get blob() { return recordingBlob; }, get speakingPhase() { return speakingPhase; },
       get state() { return state; }, set state(value) { fixtureLoaded(value); state = persistence.adopt(normalizeState(value)); }
     };
@@ -103,10 +116,116 @@ function harness(initialState, localWhisper) {
   element('#speechLanguage').value = 'en-GB';
   context.api.bindEvents();
   return { api: context.api, element, context, chatRequests, persisted: () => persisted,
-    recognitionStarts: () => recognitionStarts, failWrites: () => { failWrites = true; } };
+    holdWrites() { let release; writeGate = new Promise(resolve => { release = resolve; }); return () => { writeGate = null; release(); }; },
+    recognitionStarts: () => recognitionStarts, failWrites: (value = true) => { failWrites = value; }, languageReply: callback => { languageReply = callback; } };
 }
 
 try {
+  for (const kind of ['correction','vocabulary']) {
+    const note = kind==='correction'?{id:'recall',kind:'correction',module:'writing',correction:{original:'He go.',corrected:'He goes.'}}:{id:'recall',module:'vocabulary',title:'access',text:'机会',vocabularyMode:'productive'};
+    const recall = harness({mistakes:[note]});
+    const start = kind==='correction'?'startCorrectionStudy':'startVocabularyStudy';
+    const session = `${kind}Session`, input = `#${kind}StudyAttempt`;
+    recall.api[start]('recall');
+    recall.element(input).events.input({target:{value:'Unfinished memory answer'}});
+    assert.equal(await recall.api.recallDrafts.flush(),true);
+    const restarted = harness(recall.persisted());
+    restarted.api[start]('recall');
+    assert.equal(restarted.api[session].draft,'Unfinished memory answer','restart lost unfinished recall');
+    assert.equal(restarted.api[session].revealed,false,'restart exposed reference answer');
+    restarted.api[session].revealed=true;
+    restarted.failWrites();
+    const rate = () => kind==='correction'?restarted.api.rateCorrection('good'):restarted.api.rateVocabulary(true);
+    await rate();
+    assert.equal(restarted.api.state.mistakes[0].recallDraft.text,'Unfinished memory answer','failed rating discarded draft');
+    restarted.failWrites(false);
+    await rate();
+    assert.equal(restarted.persisted().mistakes[0].recallDraft,undefined,'completed recall retained visible draft');
+  }
+  for (const mode of ['legacy','paused','running']) {
+    const timer = harness({writings:[{id:'timer',type:'Task 2',minutes:40,prompt:'Question',essay:'Saved answer',status:'running',elapsedSeconds:600,...(mode==='legacy'?{}:{timerState:{elapsedMilliseconds:600000,anchor:mode==='running'?Date.now()-60000:null,paused:mode==='paused'}})}]});
+    await timer.api.loadWriting('timer');
+    assert.match(timer.element('#writingTimer').textContent,mode==='running'?/^28:5\d$|^29:00$/:/^30:00$/,'restored writing timer lost elapsed time');
+    assert.equal(timer.element('#writingEssay').readOnly,mode!=='running');
+    if (mode==='running') await timer.element('#toggleTimer').events.click();
+    else await timer.api.saveWriting({silent:true});
+    assert.ok(timer.persisted().writings[0].elapsedSeconds>=600);
+    assert.equal(timer.persisted().writings[0].timerState.anchor,null);
+    assert.equal(timer.persisted().writings[0].timerState.paused,true);
+  }
+  for (const kind of ['writing','speaking']) {
+    const collection = kind === 'writing' ? 'writings' : 'speaking';
+    const record = {id:'delete-me',type:'Task 2',minutes:40,part:'p1',prompt:'Question',essay:'Keep my answer',transcript:'Keep my answer',updatedAt:new Date().toISOString()};
+    const deletion = harness({[collection]:[record]});
+    const load = kind === 'writing' ? deletion.api.loadWriting : deletion.api.loadSpeaking;
+    const remove = kind === 'writing' ? deletion.api.deleteWritingRecord : deletion.api.deleteSpeakingRecord;
+    const save = kind === 'writing' ? deletion.api.saveWriting : deletion.api.saveSpeaking;
+    const answer = deletion.element(kind === 'writing' ? '#writingEssay' : '#speakingTranscript');
+    await load(record.id);
+    deletion.failWrites();
+    assert.equal(await remove(record.id),false);
+    assert.equal(deletion.api.state[collection][0].id,record.id,'failed deletion lost record');
+    assert.equal(answer.value,'Keep my answer','failed deletion cleared editor');
+    assert.equal(deletion.persisted()[collection][0].id,record.id);
+    deletion.failWrites(false);
+    const release = deletion.holdWrites();
+    const pending = remove(record.id);
+    await new Promise(setImmediate);
+    assert.equal(answer.value,'Keep my answer','editor cleared before commit acknowledgement');
+    assert.equal(await save({silent:true}),false,'autosave ran during deletion');
+    release();
+    assert.equal(await pending,true);
+    assert.equal(deletion.persisted()[collection].length,0);
+    assert.equal(answer.value,'');
+    await save({silent:true});
+    assert.equal(deletion.persisted()[collection].length,0,'late autosave resurrected record');
+  }
+  const noteDelete = harness({mistakes:[{id:'note',text:'keep'}],studyPlan:{summary:'keep'}});
+  noteDelete.failWrites();
+  assert.equal(await noteDelete.api.deleteSavedRecord('mistakes','note',null,()=>{}),false);
+  assert.equal(noteDelete.api.state.mistakes[0].id,'note');
+  await noteDelete.element('#deletePlan').events.click();
+  assert.equal(noteDelete.api.state.studyPlan.summary,'keep');
+  assert.equal(noteDelete.persisted().studyPlan.summary,'keep');
+
+  const languageFixture = {writings:[{id:'new-answer',type:'Task 2',prompt:'Education',essay:'Education helps people learn.',review:'Feedback'}],speaking:[],languageBank:{summary:'existing',speaking:[],writing:[{domain:'教育',collocations:['equal access｜平等的机会'],sentencePatterns:[],sourceKeys:['old']}],sourceKeys:['old']}};
+  for (const mode of ['empty','foreign','unattributed','disk-failure','no-content','valid']) {
+    const extraction = harness(languageFixture);
+    extraction.api.enableAi();
+    extraction.languageReply(payload => {
+      const keys = payload.writing.map(item => item.sourceKey);
+      if (mode === 'empty') return {summary:'',speaking:[],writing:[]};
+      if (mode === 'no-content') return {summary:'',speaking:[],writing:[],noContentSources:keys.map(sourceKey=>({sourceKey,reason:'内容只有题目复述，没有可复用表达。'}))};
+      return {summary:'',speaking:[],writing:[{domain:'教育',collocations:['access to learning｜学习机会'],sentencePatterns:[],sourceKeys:mode==='foreign'?['not-in-batch']:mode==='unattributed'?[]:keys}]};
+    });
+    if (mode === 'disk-failure') extraction.failWrites();
+    await extraction.api.generateLanguageBank();
+    if (['empty','foreign','unattributed','disk-failure'].includes(mode)) {
+      assert.equal(JSON.stringify(extraction.api.state.languageBank),JSON.stringify(languageFixture.languageBank),`${mode} changed the live bank`);
+      assert.equal(JSON.stringify(extraction.persisted().languageBank),JSON.stringify(languageFixture.languageBank),`${mode} consumed source eligibility`);
+    } else {
+      assert.equal(extraction.persisted().languageBank.sourceKeys.length,2,`${mode} did not persist verified source`);
+      if (mode==='no-content') assert.equal(extraction.persisted().languageBank.noContentSources.length,1);
+    }
+  }
+  const legacyBank = harness({languageBank:{summary:'legacy',speaking:[],writing:[{domain:'education',collocations:['equal access'],sentencePatterns:[]}],sourceKeys:[]}});
+  const bankBefore = JSON.stringify(legacyBank.api.state.languageBank);
+  legacyBank.api.renderLanguageBank();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(JSON.stringify(legacyBank.api.state.languageBank), bankBefore, 'render migrated the live archive');
+  assert.equal(JSON.stringify(legacyBank.persisted().languageBank), bankBefore, 'render wrote the archive');
+
+  let unsafeTranscriptionCalls = 0;
+  const unsavedRecording = harness(undefined, {status:async()=>({ready:true}),transcribe:async()=>{unsafeTranscriptionCalls++;return 'unexpected';}});
+  await unsavedRecording.api.refreshTranscriptionStatus();
+  await unsavedRecording.api.toggleRecording();
+  unsavedRecording.failWrites();
+  await unsavedRecording.api.toggleRecording();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(unsafeTranscriptionCalls, 0, 'Whisper started before audio was durable');
+  assert.equal(await unsavedRecording.api.blob.text(), 'test-audio-payload');
+  assert.match(unsavedRecording.element('#recordHint').textContent, /尚未写入磁盘/);
+
   let completeTranscription;
   const offline = harness(undefined, {status: async () => ({ready:true}), transcribe: () => new Promise(resolve => {completeTranscription = resolve;})});
   await offline.api.refreshTranscriptionStatus();
@@ -117,12 +236,18 @@ try {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(offline.api.busy, true);
   assert.equal(offline.element('#speakingTranscript').disabled, true);
+  assert.match(offline.persisted().speaking[0].audio, /^data:audio/, 'audio must reach storage before Whisper resolves');
+  assert.equal(offline.persisted().speaking[0].transcriptionStatus, 'pending');
+  const interruptedRecording = harness(offline.persisted());
+  await interruptedRecording.api.loadSpeaking(offline.persisted().speaking[0].id);
+  assert.equal(await interruptedRecording.api.blob.text(), 'test-audio-payload', 'restart during transcription lost audio');
   completeTranscription('Offline result.');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(offline.api.busy, false);
   assert.equal(offline.element('#speakingTranscript').value, 'Offline result.');
   assert.equal(await offline.api.saveSpeaking(), true);
   assert.equal(offline.persisted().speaking[0].transcript, 'Offline result.');
+  assert.equal(offline.persisted().speaking[0].transcriptionStatus, 'completed');
   assert.match(offline.persisted().speaking[0].audio, /^data:audio/);
   const pending = offline.api.transcribeLocalRecording();
   await offline.api.newSpeaking();
@@ -220,7 +345,7 @@ try {
   assert.match(h.chatRequests[1].messages[0].content, /本地 Whisper/);
   assert.match(h.chatRequests[1].messages[1].content, /完整题目 \/ 题卡/);
   assert.match(h.chatRequests[1].messages[1].content, /Part 1/);
-  assert.equal(h.chatRequests[1].output_contract, 'review-markdown-v1-speaking');
+  assert.equal(h.chatRequests[1].output_contract, 'review-json-v1-speaking');
   const vision = harness({ writings: [{ id: 'vision', type: 'Task 1 Academic', minutes: 20, prompt: 'Describe the chart.', promptImages: ['data:image/webp;base64,AAAA'], essay: 'The chart changes.', updatedAt: new Date().toISOString() }], speaking: [] });
   await vision.api.loadWriting('vision');
   vision.api.enableAi();
@@ -235,7 +360,7 @@ try {
   assert.ok(vision.persisted().writings[0].chartExtraction.text.includes('百分比'));
   await vision.element('#confirmWritingChart').events.click();
   assert.equal(vision.chatRequests.length, 2);
-  assert.equal(vision.chatRequests[1].output_contract, 'review-markdown-v1-writing');
+  assert.equal(vision.chatRequests[1].output_contract, 'review-json-v1-writing-task1');
   assert.equal(vision.chatRequests[1].messages.every(message => typeof message.content === 'string'), true, 'confirmed review must use text connection');
   assert.match(vision.chatRequests[1].messages.at(-1).content, /2000 年为 10/);
   assert.ok(vision.persisted().writings[0].reviewInput.chartConfirmedAt);

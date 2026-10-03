@@ -9,6 +9,7 @@ const run=promisify(execFile);
 const root=path.resolve(__dirname,'..');
 const packageRoot=process.env.ELP_PACKAGE_ROOT;
 if(!packageRoot)throw new Error('ELP_PACKAGE_ROOT must point to the built package');
+if(!process.env.ELP_WHISPER_TEST_WAV)throw new Error('ELP_WHISPER_TEST_WAV is required: final-package acceptance must exercise real transcription');
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 let child;
 (async()=>{
@@ -28,8 +29,9 @@ let child;
     }
     throw new Error('packaged launcher did not bind a loopback port');
   }
-  async function stop(base){
-    await fetch(`${base}/api/app/shutdown`,{method:'POST'});
+  async function stop(base,stopper=false){
+    if(stopper) await run(path.join(packageRoot,'结束学习中心.exe'),['--quiet'],{windowsHide:true,env:{...process.env,ENGLISH_LEARN_PATH_CONFIG_DIR:config}});
+    else await fetch(`${base}/api/app/shutdown`,{method:'POST'});
     for(let i=0;i<40&&child.exitCode===null;i++)await wait(100);
     assert.notEqual(child.exitCode,null,'launcher failed to exit through its own API');
   }
@@ -52,15 +54,15 @@ let child;
   const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
   assert.equal(digest(loaded.data),digest(legacy),'actual executable restart changed existing data or embedded media');
   console.log('Actual executable restart restored writing, speaking, plans, library binding and opaque legacy data.');
-  if(process.env.ELP_WHISPER_TEST_WAV){
-    const audio=await fs.readFile(process.env.ELP_WHISPER_TEST_WAV);
-    const response=await fetch(`${base}/api/transcription`,{method:'POST',headers:{'Content-Type':'audio/wav'},body:audio});
-    const result=await response.json();assert.equal(response.ok,true,JSON.stringify(result));assert.match(result.text.toLowerCase(),/country/);
-    console.log('Packaged offline transcription passed on the bundled public speech sample.');
-  }
   const {chromium}=require(process.env.ELP_PLAYWRIGHT_MODULE||'playwright');const browser=await chromium.launch({...(process.env.ELP_BROWSER_CHANNEL === 'bundled' ? {} : {channel:'chrome'}),headless:true});
   try{
     const page=await browser.newPage({viewport:{width:1440,height:1000}});await page.goto(`${base}/#home`);
+    const transcript=await page.evaluate(async encoded=>{
+      const bytes=Uint8Array.from(atob(encoded),char=>char.charCodeAt(0));
+      return window.localWhisper.transcribe(new Blob([bytes],{type:'audio/wav'}));
+    },legacyWav.toString('base64'));
+    assert.match(transcript.toLowerCase(),/country/);
+    console.log('Packaged browser decoding and real offline transcription passed on the bundled public speech sample.');
     await page.waitForFunction(()=>document.getElementById('metricLibraryStatus').textContent==='含重练与模拟');
     assert.equal(await page.locator('.nav-item[data-route="reading"],.nav-item[data-route="listening"]').count(),2);
     if(legacyAudio){
@@ -78,7 +80,15 @@ let child;
     await page.waitForFunction(()=>document.getElementById('metricLibraryStatus').textContent==='含重练与模拟');
     await page.screenshot({path:path.join(scratch,'packaged-home.png'),fullPage:true});
   }finally{await browser.close();}
-  await stop(base);
-  await fs.writeFile(path.join(scratch,'result.json'),JSON.stringify({packageRoot,version:info.version,startup:true,fullBrowserSuite:true,restartMigration:true,legacyMediaReload:true,offlineTranscription:!!process.env.ELP_WHISPER_TEST_WAV},null,2));
+  const beforeDrain=await(await fetch(base+'/api/data')).json();
+  const payload=JSON.stringify({metadata:{shutdownDrain:'persisted'},collections:{}});
+  let firstChunk;
+  const opened=new Promise(resolve=>{firstChunk=resolve});
+  const slowSave=fetch(base+'/api/data',{method:'PATCH',headers:{'Content-Type':'application/json','If-Match':beforeDrain.revision,'X-ELP-Directory':beforeDrain.storage.directoryId},duplex:'half',body:new ReadableStream({async start(controller){controller.enqueue(new TextEncoder().encode(payload.slice(0,20)));firstChunk();await wait(1000);controller.enqueue(new TextEncoder().encode(payload.slice(20)));controller.close();}})});
+  await opened;await wait(100);
+  const stopping=stop(base,true);
+  assert.equal((await slowSave).status,200,'normal stopper interrupted an accepted save');await stopping;
+  base=await start();assert.equal((await(await fetch(base+'/api/data')).json()).data.shutdownDrain,'persisted');await stop(base);
+  await fs.writeFile(path.join(scratch,'result.json'),JSON.stringify({packageRoot,version:info.version,startup:true,gracefulStopperDrain:true,fullBrowserSuite:true,restartMigration:true,legacyMediaReload:true,offlineTranscription:!!process.env.ELP_WHISPER_TEST_WAV},null,2));
   console.log(`PACKAGE_SMOKE_RESULT=${path.join(scratch,'result.json')}`);
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>{if(child&&child.exitCode===null)child.kill();});

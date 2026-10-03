@@ -51,8 +51,15 @@ func (s *diskStore) validateStudyMedia(data json.RawMessage) error {
 	if err := studyMediaRefs(value, refs); err != nil {
 		return err
 	}
+	if len(refs) == 0 {
+		return nil
+	}
+	mediaDirectory, err := s.libraryPathLocked("study-media", "")
+	if err != nil {
+		return err
+	}
 	for id := range refs {
-		path, err := s.libraryPathLocked("study-media", id)
+		path, err := collectionFilePath(mediaDirectory, id)
 		if err != nil {
 			return err
 		}
@@ -70,6 +77,15 @@ func (s *diskStore) validateStudyMedia(data json.RawMessage) error {
 // Caller owns the archive lock. Every managed recovery point participates in
 // reachability; no file is removed if any snapshot or referenced record is bad.
 func (s *diskStore) collectStudyGarbageLocked() error {
+	// A quarantined manifest may reference healthy records absent from the fallback.
+	// Keep all immutable versions until the user has recovered that archive.
+	damaged, err := filepath.Glob(s.dataPathLocked() + ".damaged-*")
+	if err != nil {
+		return err
+	}
+	if len(damaged) > 0 {
+		return nil
+	}
 	snapshots := []string{s.dataPathLocked(), s.backupPathLocked()}
 	daily, err := filepath.Glob(filepath.Join(s.directory, "backups", "EnglishLearnPath-data-*.json"))
 	if err != nil {
@@ -117,8 +133,12 @@ func (s *diskStore) collectStudyGarbageLocked() error {
 			return err
 		}
 	}
+	recordDirectory, err := s.libraryPathLocked("study-records", "")
+	if err != nil {
+		return err
+	}
 	for name := range records {
-		path, err := s.libraryPathLocked("study-records", name)
+		path, err := collectionFilePath(recordDirectory, name)
 		if err != nil {
 			return err
 		}

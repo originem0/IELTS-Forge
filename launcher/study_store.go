@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -32,6 +33,7 @@ type studyCollectionPatch struct {
 type studyPatch struct {
 	Metadata    map[string]json.RawMessage      `json:"metadata"`
 	Collections map[string]studyCollectionPatch `json:"collections"`
+	Base        *studyPatchBase                 `json:"base,omitempty"`
 }
 
 func isStudyCollection(name string) bool {
@@ -191,8 +193,11 @@ func (s *diskStore) manifestFromLegacy(data json.RawMessage) (studyManifest, err
 	return manifest, nil
 }
 
+var errUnsupportedDataVersion = errors.New("档案版本高于当前程序支持的版本，请使用更新的程序打开；未恢复旧备份或修改文件")
+
 func readDiskEnvelope(primary, backup string) (diskDataEnvelope, error) {
-	for index, path := range []string{primary, backup} {
+	var lastErr error
+	for _, path := range recoveryCandidates(primary, backup) {
 		if path == "" {
 			continue
 		}
@@ -203,19 +208,64 @@ func readDiskEnvelope(primary, backup string) (diskDataEnvelope, error) {
 		if err != nil {
 			return diskDataEnvelope{}, err
 		}
-		var envelope diskDataEnvelope
-		if json.Unmarshal(raw, &envelope) == nil && len(envelope.Data) > 0 && json.Valid(envelope.Data) && (envelope.Version == 1 || envelope.Version == 2) {
+		envelope, err := validateDiskSnapshot(raw, filepath.Dir(primary))
+		if errors.Is(err, errUnsupportedDataVersion) {
+			return diskDataEnvelope{}, err
+		}
+		if err == nil {
+			if path != primary {
+				envelope.RecoverySource = path
+			}
 			return envelope, nil
 		}
-		if index == 1 || backup == "" {
-			return diskDataEnvelope{}, errors.New("学习档案及备份无法解析")
-		}
+		lastErr = err
 	}
-	// Missing primary and backup are a fresh archive, not an empty manifest.
-	if _, err := os.Stat(primary); err == nil {
-		return diskDataEnvelope{}, errors.New("主档案损坏且没有有效备份")
+	if lastErr != nil {
+		return diskDataEnvelope{}, lastErr
 	}
 	return diskDataEnvelope{Version: 1, Data: json.RawMessage(`{}`)}, nil
+}
+
+func recoveryCandidates(primary, backup string) []string {
+	paths := []string{primary, backup}
+	if primary != "" && backup != "" {
+		daily, _ := filepath.Glob(filepath.Join(filepath.Dir(primary), "backups", "EnglishLearnPath-data-????-??-??.json"))
+		sort.Sort(sort.Reverse(sort.StringSlice(daily)))
+		paths = append(paths, daily...)
+	}
+	return paths
+}
+
+// A parseable manifest is not a recovery point until all records and media resolve.
+func validateDiskSnapshot(raw []byte, directory string) (diskDataEnvelope, error) {
+	var envelope diskDataEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return envelope, err
+	}
+	if envelope.Version > 2 {
+		return envelope, errUnsupportedDataVersion
+	}
+	if envelope.Version != 1 && envelope.Version != 2 {
+		return envelope, errors.New("学习档案版本无效")
+	}
+	store := &diskStore{directory: directory}
+	data := envelope.Data
+	if envelope.Version == 2 {
+		var err error
+		data, err = store.resolveStudyManifest(data)
+		if err != nil {
+			return envelope, err
+		}
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(data, &object) != nil || object == nil {
+		return envelope, errors.New("学习档案不是有效对象")
+	}
+	if err := store.validateStudyMedia(data); err != nil {
+		return envelope, err
+	}
+	envelope.ResolvedData = data
+	return envelope, nil
 }
 
 func (s *diskStore) resolveStudyManifest(raw json.RawMessage) (json.RawMessage, error) {
@@ -224,6 +274,10 @@ func (s *diskStore) resolveStudyManifest(raw json.RawMessage) (json.RawMessage, 
 		return nil, errors.New("练习索引无效")
 	}
 	result := manifest.Metadata
+	recordDirectory, err := s.libraryPathLocked("study-records", "")
+	if err != nil {
+		return nil, err
+	}
 	for _, collection := range studyCollections {
 		records := []json.RawMessage{}
 		seen := map[string]bool{}
@@ -232,7 +286,7 @@ func (s *diskStore) resolveStudyManifest(raw json.RawMessage) (json.RawMessage, 
 				return nil, errors.New("练习索引引用无效")
 			}
 			seen[ref.ID] = true
-			path, err := s.libraryPathLocked("study-records", ref.Hash+".json")
+			path, err := collectionFilePath(recordDirectory, ref.Hash+".json")
 			if err != nil {
 				return nil, err
 			}
@@ -257,7 +311,7 @@ func (s *diskStore) resolveStudyManifest(raw json.RawMessage) (json.RawMessage, 
 	return json.Marshal(result)
 }
 
-func (s *diskStore) patchStudy(patch studyPatch, directoryID, revision string) (map[string]any, error) {
+func (s *diskStore) patchStudy(patch studyPatch, directoryID, revision string, commitIDs ...string) (map[string]any, error) {
 	s.Lock()
 	defer s.Unlock()
 	if err := s.checkDirectoryLocked(directoryID); err != nil {
@@ -273,10 +327,25 @@ func (s *diskStore) patchStudy(patch studyPatch, directoryID, revision string) (
 	if err != nil {
 		return nil, err
 	}
-	if dataRevision(envelope.Data) != revision {
+	commit, err := identifyCommit(commitIDs, "PATCH", revision, patch)
+	if err != nil {
+		return nil, err
+	}
+	if replay, err := s.replayCommit(envelope.Commits, commit); replay != nil || err != nil {
+		return replay, err
+	}
+	if patch.Base != nil {
+		data := envelope.ResolvedData
+		if data == nil {
+			data = envelope.Data
+		}
+		if err := validateStudyPatchBase(patch, data); err != nil {
+			return nil, err
+		}
+	} else if dataRevision(envelope.Data) != revision {
 		return nil, errDataConflict
 	}
-	if len(patch.Metadata) == 0 && len(patch.Collections) == 0 {
+	if len(patch.Metadata) == 0 && len(patch.Collections) == 0 && envelope.RecoverySource == "" {
 		return map[string]any{"saved": true, "revision": revision, "storage": s.statusLocked()}, nil
 	}
 	var manifest studyManifest
@@ -343,7 +412,8 @@ func (s *diskStore) patchStudy(patch studyPatch, directoryID, revision string) (
 	if err != nil {
 		return nil, err
 	}
-	if err := s.writeEnvelopeLocked(diskDataEnvelope{Version: 2, UpdatedAt: time.Now().Format(time.RFC3339), Data: encoded}); err != nil {
+	commit.Records = normalized
+	if err := s.writeEnvelopeLocked(diskDataEnvelope{Version: 2, UpdatedAt: time.Now().Format(time.RFC3339), Data: encoded, Commits: appendCommit(envelope.Commits, commit, dataRevision(encoded))}); err != nil {
 		return nil, err
 	}
 	s.studyWrites++
@@ -362,7 +432,7 @@ func registerStudyAPI(mux *http.ServeMux) {
 			writeError(w, 400, err.Error())
 			return
 		}
-		result, err := disk.patchStudy(patch, r.Header.Get("X-ELP-Directory"), r.Header.Get("If-Match"))
+		result, err := disk.patchStudy(patch, r.Header.Get("X-ELP-Directory"), r.Header.Get("If-Match"), r.Header.Get("X-ELP-Commit"))
 		if err != nil {
 			code := 500
 			if errors.Is(err, errDirectoryChanged) || errors.Is(err, errDataConflict) {

@@ -13,7 +13,8 @@
   function record(value, path) {
     requireType(object(value), path);
     requireType(text(value.id) && value.id.trim().length > 0, `${path}.id`);
-    for (const key of ["type", "part", "prompt", "essay", "transcript", "audio", "review", "topicTitle", "status", "updatedAt", "createdAt", "reviewedAt", "original", "correction", "explanation", "module", "category", "text", "translation", "example"]) optional(value, key, text, path);
+    for (const key of ["type", "part", "prompt", "essay", "transcript", "audio", "review", "topicTitle", "status", "updatedAt", "createdAt", "reviewedAt", "original", "explanation", "module", "category", "text", "translation", "example"]) optional(value, key, text, path);
+    optional(value, "correction", item => text(item) || object(item), path);
     for (const key of ["minutes", "duration", "attemptNumber"]) optional(value, key, number, path);
     for (const key of ["images", "promptImages"]) optional(value, key, strings, path);
     for (const key of ["reviewInput", "questionRef", "chartExtraction"]) optional(value, key, object, path);
@@ -35,7 +36,14 @@
       data[name].forEach((value, index) => { record(value, `${name}[${index}]`); requireType(!ids.has(value.id), `${name}.id 重复`); ids.add(value.id); });
     }
     optional(data, "activityDates", strings, "data");
-    for (const name of ["studyPlan", "languageBank", "preferences", "planProgress"]) optional(data, name, object, "data");
+    for (const name of ["studyPlan", "languageBank", "preferences", "planProgress", "learning", "languagePractice"]) optional(data, name, object, "data");
+    if (data.learning) {
+      for (const key of ["days", "recordReviews", "objectiveItems", "observed"]) optional(data.learning, key, object, "learning");
+      optional(data.learning, "events", value => Array.isArray(value) && value.every(object), "learning");
+      for (const [key, day] of Object.entries(data.learning.days || {})) {
+        requireType(object(day) && Array.isArray(day.tasks) && day.tasks.every(object) && object(day.progress), `learning.days.${key}`);
+      }
+    }
     if (data.languageBank) for (const name of ["writing", "speaking"]) optional(data.languageBank, name, value => Array.isArray(value) && value.every(object), "languageBank");
     if (data.planProgress) for (const [day, tasks] of Object.entries(data.planProgress)) requireType(object(tasks) && Object.values(tasks).every(value => typeof value === "boolean"), `planProgress.${day}`);
     if (data.studyPlan) {

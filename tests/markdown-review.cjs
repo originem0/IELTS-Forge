@@ -12,6 +12,7 @@ let data = {
   speaking: [{ id: 's1', part: 'p1', prompt: 'Do you enjoy cycling?', transcript: 'I like cycling.', punctuationSource:'I like cycling.', punctuatedTranscript:'I like cycling.', review: markdown, updatedAt: '2026-09-01T10:00:00Z', audio: 'data:audio/webm;base64,dGVzdA==' }],
   mistakes: []
 };
+const generatedReport = {topic:'骑行习惯',overall:6,range:[5.5,6.5],criteria:['FC','LR','GRA','P'].map(code=>({code,score:code==='P'?null:6,evidence:'来自转写的证据'})),overview:'表达清晰。',transcript:'I like cycling.',corrections:[],improvements:[],modelAnswer:'I enjoy cycling.',modelExplanation:'保留原意',language:{collocations:[],sentencePatterns:[]}};
 let chatCalls = 0;
 let punctuationResponse = 'I like cycling.';
 const server = http.createServer(async (req, res) => {
@@ -23,7 +24,7 @@ const server = http.createServer(async (req, res) => {
       if (['PUT','PATCH'].includes(req.method)) { let body=''; for await(const chunk of req) body+=chunk; data=applyStateRequest(data,JSON.parse(body),req.method); }
       res.end(JSON.stringify({ data, storage: { bound: true, ready: true } }));
     } else if (req.url === '/api/ai/status') res.end(JSON.stringify({ connected: true, model: 'synthetic' }));
-    else if (req.url === '/api/ai/chat') { chatCalls++; let body=''; for await (const chunk of req) body+=chunk; const request=JSON.parse(body); res.end(JSON.stringify({ content:request.messages[0].content.startsWith('只提取 IELTS') ? JSON.stringify({description:'Synthetic chart: 10 in 2000, 20 in 2010.',uncertainties:'无'}) : request.messages[0].content.startsWith('只为用户提供') ? punctuationResponse : markdown })); }
+    else if (req.url === '/api/ai/chat') { chatCalls++; let body=''; for await (const chunk of req) body+=chunk; const request=JSON.parse(body); res.end(JSON.stringify({ content:request.messages[0].content.startsWith('只提取 IELTS') ? JSON.stringify({description:'Synthetic chart: 10 in 2000, 20 in 2010.',uncertainties:'无'}) : request.messages[0].content.startsWith('只为用户提供') ? punctuationResponse : request.output_contract?.startsWith('review-json-v1') ? JSON.stringify(generatedReport) : markdown })); }
     else { res.statusCode=404; res.end('{}'); }
     return;
   }
@@ -43,6 +44,17 @@ const server = http.createServer(async (req, res) => {
     page.on('pageerror',err=>errors.push(err.message));
     page.on('request',request=>{ if (/^https?:/.test(request.url()) && !request.url().startsWith('http://127.0.0.1:')) external.push(request.url()); });
     await page.goto(`http://127.0.0.1:${server.address().port}/#speaking`);
+    const structured = await page.evaluate(() => {
+      const input={topic:'Structured report',overall:6.5,range:[],criteria:['TR','CC','LR','GRA'].map(code=>({code,score:6.5,evidence:'Source evidence'})),overview:'<img src=x onerror=alert(1)>',transcript:'',corrections:[{original:'He go.',replacement:'He goes.',type:'主谓一致',reason:'第三人称单数'}],improvements:[],modelAnswer:'He goes to work.',modelExplanation:'原意保留',language:{collocations:[{english:'at work',chinese:'在工作'}],sentencePatterns:[]},ignored:'must not survive'};
+      const result=ELPAssessment.reviewPresentation(JSON.stringify(input),'writing');
+      const report=document.createElement('div'),score=document.createElement('div'),overview=document.createElement('div');
+      renderReviewReport(report,result.markdown,null,{scoreElement:score,overviewElement:overview,strictSections:true});
+      const original=document.createElement('div'),corrections=document.createElement('div'),count=document.createElement('span'),notice=document.createElement('div');
+      renderReviewAnnotations({original:'He go.',markdown:result.markdown,definiteOnly:true,originalElement:original,correctionsElement:corrections,countElement:count,noticeElement:notice});
+      return {criteria:score.querySelectorAll('.score-criterion-card').length,images:overview.querySelectorAll('img').length,annotations:original.querySelectorAll('mark').length,ignored:Object.hasOwn(result.report,'ignored')};
+    });
+    assert.deepEqual(structured,{criteria:4,images:0,annotations:1,ignored:false});
+
     await page.locator('[data-speaking-id="s1"]').click();
     async function checkMarkdown(selector) {
       assert.equal(await page.locator(`${selector} strong`).textContent(),'重点');
@@ -69,7 +81,9 @@ const server = http.createServer(async (req, res) => {
     await page.locator('#reviewSpeaking').click();
     await page.waitForURL(`**/#review/speaking/${retryId}`);
     await page.waitForTimeout(100);
-    assert.equal(data.speaking[0].review,markdown,'persist the original Markdown');
+    assert.deepEqual(data.speaking.find(item=>item.id===retryId).reviewData,generatedReport,'persist structured AI data before presenting the report');
+    assert.match(data.speaking.find(item=>item.id===retryId).review,/### 评分与小分/);
+    assert.equal(data.speaking[0].review,markdown,'legacy report stays intact');
     assert.equal(data.speaking.find(item => item.id === retryId).reviewInput.original,'I like cycling.');
     assert.equal(await page.locator('#reviewWorkspace').isVisible(),true,'finished feedback opens the dedicated report');
     await page.locator('#closeReviewWorkspace').click();
@@ -118,13 +132,14 @@ const server = http.createServer(async (req, res) => {
     assert.equal(data.writings.find(item => item.id !== 'w1')?.reviewInput?.chartText,'Corrected chart: 10 in 2000, 30 in 2010.');
     assert.match(await page.locator('#reviewChartEvidence').textContent(), /30 in 2010/);
     assert.equal(await page.locator('#reviewWorkspace').isVisible(),true);
-    await checkMarkdown('#reviewOverviewSummary');
+    assert.match(await page.locator('#reviewOverviewSummary').textContent(),/表达清晰/);
+    assert.equal(await page.locator('#reviewScoreSummary .score-criterion-card').count(),4);
     assert.equal(await page.locator('#reviewWorkspacePrompt').textContent(),'Writing question');
     assert.equal(await page.locator('#reviewWorkspaceAudio').isVisible(),false);
     assert.equal(await page.locator('#reviewWorkspaceNavigation button').count(),0,'the report does not need a chapter-navigation button row');
     const coreSectionOrder = await page.locator('#reviewWorkspace').evaluate(root => ['.review-question','#reviewScorePanel','#reviewOverviewPanel','.review-source:not(.hidden)','#reviewCorrectionsSection'].map(selector => root.querySelector(selector).getBoundingClientRect().top));
     assert.deepEqual(coreSectionOrder,[...coreSectionOrder].sort((a,b)=>a-b),'all review types must use the same visible core-section order');
-    assert.equal(await page.locator('#reviewWorkspaceFeedback .review-report-card').count(),0);
+    assert.equal(await page.locator('#reviewWorkspaceFeedback .review-report-card').count(),3,'structured reports render improvements, model answer and reusable language');
     const orderedReport = await page.evaluate(() => {
       const source = '主题：城市交通\n\n### 评分与小分\n\n**总分：6.5**\n\n| 项目 | 分数 | 证据 |\n|---|---|---|\n| TR | 6.5 | 完成任务，但论证仍可补充具体例证。 |\n| CC | 6.5 | 段落清楚，部分衔接略显生硬。 |\n| LR | 6.5 | 词汇足以表达观点，可增加搭配准确性。 |\n| GRA | 6.0 | 句式有变化，但仍有少量确定语法错误。 |\n\n### 总体评价\n\n任务完成清晰。\n\n### 确定语法错误\n\n没有确定错误。\n\n### 原文优化建议\n\n可补充例证。\n\n### 目标水平范文\n\nModel answer.\n\n### 最终值得记忆的语料\n\npublic transport';
       window.renderReviewReport(document.querySelector('#reviewWorkspaceFeedback'), source, document.querySelector('#reviewWorkspaceNavigation'), {scoreElement:document.querySelector('#reviewScoreSummary'),overviewElement:document.querySelector('#reviewOverviewSummary')});

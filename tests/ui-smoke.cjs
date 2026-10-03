@@ -29,7 +29,7 @@ const server = http.createServer(async (req, res) => {
       if (request.output_contract !== 'study-plan-json-v1') { res.statusCode = 400; res.end(JSON.stringify({error:'unexpected synthetic contract'})); return; }
       planAttempts += 1;
       if (planAttempts === 1) { res.statusCode = 502; res.end(JSON.stringify({error:'模型服务暂时不可用'})); return; }
-      const day = {writing:1,speaking:1,writingReview:1,writingRewrite:1,speakingReview:1,languageMinutes:15,reviewMinutes:30,note:'synthetic day'};
+       const day = {writing:1,speaking:1,reading:1,listening:1,writingReview:1,writingRewrite:1,speakingReview:1,readingReview:1,listeningReview:1,languageMinutes:15,reviewMinutes:30,note:'synthetic day'};
       const phases = ['重点强化','冲刺与调整'].map(name => ({name,focus:'synthetic focus',days:Array.from({length:7},()=>({...day}))}));
       res.end(JSON.stringify({content:JSON.stringify({summary:'synthetic retried plan',priorities:['review'],phases})}));
     }
@@ -49,6 +49,19 @@ const server = http.createServer(async (req, res) => {
   try {
     await fs.mkdir(artifactRoot,{recursive:true});
     const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+    async function checkRecallDisclosure(selector) {
+      const cards = page.locator(`${selector} .language-recall-card`);
+      const first = cards.nth(0), second = cards.nth(1);
+      const original = await first.locator('textarea').inputValue();
+      await first.locator('textarea').fill('Keep my unfinished recall when switching items.');
+      await second.locator('summary').focus();
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(selector => document.querySelectorAll(`${selector} details[open]`).length === 1 && document.querySelectorAll(`${selector} details`)[1].open, selector);
+      assert.equal(await first.locator('textarea').isVisible(), false);
+      await first.locator('summary').click();
+      assert.equal(await first.locator('textarea').inputValue(), 'Keep my unfinished recall when switching items.');
+      await first.locator('textarea').fill(original);
+    }
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -91,9 +104,9 @@ const server = http.createServer(async (req, res) => {
     await page.locator('#languageTabWriting').click();
     assert.equal(await page.locator('[data-language-index]').count(),2);
     assert.equal(await page.locator('#languageBankDetail > h3').textContent(),'教育');
-    assert.equal(await page.locator('#languageBankDetail li').count(),8,'writing shows a recall-sized daily set without deleting saved entries');
-    assert.equal(await page.locator('#languageBankDetail .language-translation').count(),8,'every visible writing expression includes a Chinese translation');
-    assert.match(await page.locator('.language-memory-note').textContent(),/本类共保存 10 条/);
+    assert.equal(await page.locator('#languageBankDetail .language-recall-card').count(),3,'writing keeps a small active recall set');
+    assert.equal(await page.locator('#languageBankDetail .study-archive-row').count(),10,'all saved expressions remain in the archive');
+    assert.equal(await page.locator('#languageBankDetail .study-archive-row small').count(),10,'each archived expression retains its Chinese translation');
     await page.locator('[data-language-index="1"]').click();
     assert.equal(await page.locator('#languageBankDetail > h3').textContent(),'通用表达');
     assert.equal(await page.locator('.language-bank-detail').count(),1,'only the selected language card may be expanded');
@@ -115,6 +128,7 @@ const server = http.createServer(async (req, res) => {
     assert.equal(await page.locator('#writingSetupView').isVisible(), false, 'writing setup opens only after New Practice');
     assert.equal(await page.locator('#dailyWritingLanguage article').count(), 3, 'writing overview keeps the daily recall set small');
     assert.equal(await page.locator('#dailyWritingLanguage .recall-cue').count(), 3, 'daily writing prompts include Chinese recall cues');
+    await checkRecallDisclosure('#dailyWritingLanguage');
     assert.equal(await page.locator('#saveWriting').count(), 0);
     assert.equal(await page.locator('#openWritingReview').count(), 0, 'reviewed history opens reports directly without a separate button');
     assert.deepEqual(await page.locator('#writingHistory .history-group-heading span').allTextContents(), ['Task 1 · 小作文','Task 2 · 大作文']);
@@ -126,6 +140,7 @@ const server = http.createServer(async (req, res) => {
     await page.locator('[data-writing-filter="all"]').click();
     await page.locator('#newWriting').click();
     assert.equal(await page.locator('#writingSetupView').isVisible(), true);
+    assert.equal(await page.locator('#newWriting').isVisible(), false, 'overview primary action stays out of the setup');
     await page.locator('[data-writing-type="Task 1 Academic"]').click();
     assert.equal(await page.locator('#writingMinutes').inputValue(), '20');
     assert.equal(await page.locator('#writingTimer').textContent(), '20:00');
@@ -183,7 +198,9 @@ const server = http.createServer(async (req, res) => {
     await page.locator('[data-speaking-filter="p2"]').click();
     assert.equal(await page.locator('#speakingHistory [data-speaking-id]').count(),1);
     await page.locator('[data-speaking-filter="all"]').click();
+    await checkRecallDisclosure('#dailySpeakingLanguage');
     await page.locator('#newSpeaking').click();
+    assert.equal(await page.locator('#newSpeaking').isVisible(), false, 'overview primary action stays out of the recorder');
     assert.equal(await page.locator('#speakingPracticeView .speaking-grid.panel').count(), 1, 'speaking practice uses one unified panel');
     assert.equal(await page.locator('#speakingPracticeView .speaking-recorder.panel, #speakingPracticeView .transcript-panel.panel').count(), 0, 'speaking columns are not separate cards');
     assert.equal(await page.locator('#recordButton').textContent(), '开始录音并转写');
@@ -244,7 +261,9 @@ const server = http.createServer(async (req, res) => {
     assert.equal(await speakingPlanCheck.isChecked(), true, 'speaking overview uses the same completion interaction');
     await page.locator('.nav-item[data-route="home"]').click();
     assert.equal(await page.locator('#todayPlanSummary .today-module-summary').count(), 4, 'home shows all four skills');
-    assert.deepEqual(await page.locator('#todayPlanSummary .today-module-summary strong').allTextContents(), ['1/2','1/3','0/2','0/2'], 'module completion clicks update the four-skill summary');
+    const completion=await page.locator('#todayPlanSummary .today-module-summary strong').allTextContents();
+    assert.match(completion[0],/^1\//);assert.match(completion[1],/^1\//);
+    assert.deepEqual(completion.slice(2),['0/0','0/0'],'do not manufacture reading/listening reviews without source material');
     assert.equal(await page.locator('#todayPlanDetails').getAttribute('open'), null, 'task details stay collapsed by default');
     await page.screenshot({path:path.join(artifactRoot, 'elp-home-with-plan.png'), fullPage:true, animations:'disabled'});
     await page.locator('.nav-item[data-route="mistakes"]').click();
@@ -291,6 +310,7 @@ const server = http.createServer(async (req, res) => {
     assert.equal(data.mistakes.find(item => item.module === 'vocabulary').vocabularyReview, undefined);
     assert.equal(await page.locator('#vocabularyStudyAnswer').isVisible(), true, 'failed save keeps the revealed card for retry');
     failNotebookSave = false;
+    await page.clock.install();
     await page.locator('#vocabularyAgain').click();
     await page.locator('#vocabularyStudyAnswer').waitFor({state:'hidden'});
     assert.equal(data.mistakes.find(item => item.module === 'vocabulary').vocabularyReview.level, 0);
@@ -299,10 +319,13 @@ const server = http.createServer(async (req, res) => {
       assert.equal(await page.locator('#vocabularyStudy').evaluate(el => el.scrollWidth <= el.clientWidth + 1), true);
     }
     await page.setViewportSize({width:1440,height:1050});
+    await page.clock.fastForward(5*60000+1);
+    await page.locator('[data-mistake-filter="vocabulary"]').click();
+    await page.locator('#startVocabularyStudy').click();
     await page.locator('#revealVocabularyAnswer').click();
     await page.screenshot({path:path.join(artifactRoot,'elp-vocabulary-study.png'),fullPage:true,animations:'disabled'});
     await page.locator('#vocabularyKnown').click();
-    await page.waitForFunction(() => document.querySelector('#vocabularyStudyStatus').textContent.includes('本轮完成'));
+    await page.waitForFunction(() => document.querySelector('#vocabularyStudyStatus').textContent.includes('本轮已练'));
     const learned = data.mistakes.find(item => item.module === 'vocabulary').vocabularyReview;
     assert.equal(learned.level, 1);
     assert.ok(learned.dueDate > learned.lastReviewedDate);

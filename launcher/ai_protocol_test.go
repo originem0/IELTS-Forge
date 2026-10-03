@@ -21,6 +21,28 @@ func transportAI(t *testing.T, handler func(*http.Request) (int, string)) {
 	})}
 	t.Cleanup(func() { client = previous })
 }
+
+func TestAITransportRequiresTLSExceptLoopback(t *testing.T) {
+	for _, address := range []string{"https://example.com/v1", "http://localhost:8000/v1", "http://127.0.0.1:8000", "http://[::1]:8000"} {
+		if err := validateAIEndpoint(aiConfig{BaseURL: address}); err != nil {
+			t.Fatalf("%s: %v", address, err)
+		}
+	}
+	for _, address := range []string{"http://example.com/v1", "http://192.168.1.2/v1", "http://localhost.example.com", "http://127.0.0.1.example.com"} {
+		if err := validateAIEndpoint(aiConfig{BaseURL: address}); err == nil {
+			t.Fatalf("accepted %s", address)
+		}
+		transportAI(t, func(r *http.Request) (int, string) { t.Fatal("plaintext request reached transport"); return 200, "" })
+		r, err := http.NewRequest("POST", address, strings.NewReader("private practice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		authAI(r, aiConfig{APIKey: "private-key", Protocol: "anthropic"})
+		if _, err := doAIRequest(r); err == nil {
+			t.Fatalf("legacy endpoint sent %s", address)
+		}
+	}
+}
 func aiBody(t *testing.T, r *http.Request) map[string]any {
 	t.Helper()
 	var body map[string]any

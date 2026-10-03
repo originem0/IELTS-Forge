@@ -6,11 +6,12 @@
   "use strict";
 
   function createAutosave({ write, delay = 700, schedule = setTimeout, cancel = clearTimeout }) {
-    let version = 0, saved = 0, timer = null, pending = null, error = null;
+    let version = 0, saved = 0, timer = null, pending = null, error = null, held = 0;
     let options = { silent: true };
     function clearTimer() { if (timer !== null) cancel(timer); timer = null; }
     function flush() {
       clearTimer();
+      if (held) return Promise.resolve(false);
       if (pending) return pending;
       if (version === saved) return Promise.resolve(true);
       // Keep dirty changes through a failed write, including changes made while
@@ -28,7 +29,16 @@
       return pending;
     }
     return {
-      mark() { version++; clearTimer(); timer = schedule(() => { timer = null; void flush(); }, delay); },
+      mark() { version++; clearTimer(); if (!held) timer = schedule(() => { timer = null; void flush(); }, delay); },
+      hold() {
+        if (pending) throw new Error("请先等待正在保存的练习");
+        held++; clearTimer();
+        let released = false;
+        return () => {
+          if (released) return; released = true; held--;
+          if (!held && saved < version) timer = schedule(() => { timer = null; void flush(); }, delay);
+        };
+      },
       save(value = { silent: true }) { version++; options = value; return flush(); },
       flush,
       reset() {
@@ -47,6 +57,11 @@
       start() { if (anchor === null) anchor = now(); },
       pause() { if (anchor !== null) { accumulated += Math.max(0, now() - anchor); anchor = null; } },
       reset(seconds = 0) { accumulated = seconds * 1000; anchor = null; },
+      snapshot() { return { elapsedMilliseconds: accumulated, anchor }; },
+      restore(value = {}) {
+        accumulated = Number.isFinite(value.elapsedMilliseconds) && value.elapsedMilliseconds >= 0 ? value.elapsedMilliseconds : 0;
+        anchor = Number.isFinite(value.anchor) && value.anchor >= 0 ? Math.min(value.anchor, now()) : null;
+      },
       get seconds() { return Math.floor((accumulated + (anchor === null ? 0 : Math.max(0, now() - anchor))) / 1000); },
       get running() { return anchor !== null; }
     };

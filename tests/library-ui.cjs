@@ -75,6 +75,10 @@ const upload = data => ({ name: 'fixture.json', mimeType: 'application/json', bu
     assert.equal(await page.locator('.library-row').count(), 1, 'repeat import duplicated pack');
     await page.reload();
     await page.locator('.library-row').waitFor();
+    assert.equal(await page.locator('#libraryImportPanel').isVisible(), false, 'existing banks lead the library instead of an expanded import form');
+    await page.locator('#toggleLibraryImport').click();
+    assert.equal(await page.locator('#libraryImportPanel').isVisible(), true);
+    assert.equal(await page.locator('#toggleLibraryImport').getAttribute('aria-expanded'), 'true');
     const invalid = structuredClone(pack); invalid.units[0].groups[0].questions[0].answers = [];
     await page.locator('#libraryFiles').setInputFiles(upload(invalid));
     await page.locator('#libraryStatus.is-error').waitFor();
@@ -128,7 +132,8 @@ const upload = data => ({ name: 'fixture.json', mimeType: 'application/json', bu
     await saving;
     await page.locator('.nav-item[data-route="listening"]').click();
     releaseSave();
-    await page.locator('[data-page="listening"] .objective-heading h2').filter({hasText:'听力练习'}).waitFor();
+    await page.locator('#pageTitle').filter({hasText:'听力练习'}).waitFor();
+    await page.locator('[data-page="listening"].is-active .objective-library').waitFor();
     assert.ok(page.url().endsWith('#listening'),'late save navigation overrode the latest user route');
     await page.unroute('**/api/library/attempts/*');
     await page.locator('.nav-item[data-route="reading"]').click();

@@ -7,10 +7,26 @@
   let selection = null;
   let version = 0;
   let savedDisabled = [];
+  let importChoice = null;
+  function showImport(open) {
+    $("libraryImportPanel").classList.toggle("hidden", !open);
+    $("toggleLibraryImport").setAttribute("aria-expanded", String(open));
+    $("toggleLibraryImport").textContent = open ? "收起导入" : "导入题库";
+  }
+  $("toggleLibraryImport").addEventListener("click", () => {
+    if (api.busy) return;
+    importChoice = $("libraryImportPanel").classList.contains("hidden");
+    showImport(importChoice);
+    if (importChoice) $("libraryImportPanel").scrollIntoView({ block: "nearest" });
+  });
+  window.addEventListener("elp:library-listed", event => {
+    if (importChoice === null) showImport(event.detail.empty);
+  });
+  window.addEventListener("elp:open-library-import", () => { importChoice = true; showImport(true); });
   const node = (tag,text,className) => { const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(className)el.className=className;return el; };
   const report = (text,error=false) => { $("libraryStatus").textContent=text;$("libraryStatus").classList.toggle("is-error",error); };
   function busy(value) {
-    const controls=["libraryFiles","libraryFolder","importLibrary","cancelLibraryImport","refreshLibrary","selectDataDirectory","onboardingSelectDirectory"].map($).filter(Boolean);
+    const controls=["libraryFiles","libraryFolder","importLibrary","cancelLibraryImport","refreshLibrary","toggleLibraryImport","selectDataDirectory","onboardingSelectDirectory"].map($).filter(Boolean);
     if(value){savedDisabled=controls.map(control=>control.disabled);controls.forEach(control=>{control.disabled=true;});}
     else {controls.forEach((control,i)=>{control.disabled=savedDisabled[i]||false;});$("importLibrary").disabled=!selection;}
     api.setBusy(value);$("libraryPage").setAttribute("aria-busy",String(value));
@@ -31,6 +47,7 @@
   }
   async function choose(files) {
     if(api.busy||!files.length)return;
+    importChoice=true;showImport(true);
     discard();const requestVersion=++version;step(1);report("正在识别题目和配套附件……");busy(true);
     try {
       if(files.reduce((sum,file)=>sum+file.size,0)>1024*1024*1024)throw new Error("资料超过 1 GB，请拆分题库包或题库文件夹。");
@@ -72,5 +89,5 @@
   drop.addEventListener("dragover",event=>{event.preventDefault();if(!api.busy)drop.classList.add("is-dragover");});
   drop.addEventListener("dragleave",()=>drop.classList.remove("is-dragover"));
   drop.addEventListener("drop",event=>{event.preventDefault();drop.classList.remove("is-dragover");if([...event.dataTransfer.items].some(item=>item.webkitGetAsEntry?.()?.isDirectory)){report("文件夹请点击“选择题库文件夹”，ZIP 可以直接拖入。",true);return;}choose([...event.dataTransfer.files]);});
-  window.addEventListener("elp:storage-changed",()=>{reset();if(api.busy)busy(false);});
+  window.addEventListener("elp:storage-changed",()=>{importChoice=null;showImport(false);reset();if(api.busy)busy(false);});
 })();

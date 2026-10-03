@@ -26,7 +26,7 @@ func copyLearningFiles(source, destination string) error {
 			return err
 		}
 		for _, file := range files {
-			if strings.HasPrefix(file.Name(), ".library-") || strings.HasPrefix(file.Name(), ".import-") {
+			if strings.HasPrefix(file.Name(), ".library-") || strings.HasPrefix(file.Name(), ".import-") || strings.Contains(file.Name(), ".damaged-") {
 				continue
 			}
 			limit := backupFileLimit("library/" + collection + "/" + file.Name())

@@ -267,6 +267,15 @@ func (s *diskStore) libraryPathLocked(collection, filename string) (string, erro
 			return "", errors.New("资料目录不能指向数据目录之外")
 		}
 	}
+	return collectionFilePath(dir, filename)
+}
+
+// Resolve the collection once per read batch, then still reject a symlink at
+// every leaf. No process-wide path cache survives a directory change.
+func collectionFilePath(dir, filename string) (string, error) {
+	if filename != "" && filepath.Base(filename) != filename {
+		return "", errors.New("资料文件名无效")
+	}
 	path := filepath.Join(dir, filename)
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("资料文件不能是符号链接")

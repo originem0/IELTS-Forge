@@ -15,30 +15,34 @@ import (
 var errAttemptConflict = errors.New("练习已在其他页面更新，请重新载入后继续")
 
 type libraryAttempt struct {
-	Explanations    map[string]objectiveExplanation `json:"explanations,omitempty"`
-	ID              string                          `json:"id"`
-	Revision        int                             `json:"revision"`
-	PackID          string                          `json:"packId"`
-	UnitID          string                          `json:"unitId"`
-	ExamID          string                          `json:"examId,omitempty"`
-	StartedAt       string                          `json:"startedAt,omitempty"`
-	DeadlineAt      string                          `json:"deadlineAt,omitempty"`
-	Mode            string                          `json:"mode"`
-	Status          string                          `json:"status"`
-	ReviewOf        string                          `json:"reviewOf,omitempty"`
-	ReviewQuestions []string                        `json:"reviewQuestions,omitempty"`
-	Highlights      []libraryHighlight              `json:"highlights,omitempty"`
-	Answers         map[string][]string             `json:"answers"`
-	Marked          []string                        `json:"marked,omitempty"`
-	Notes           map[string]string               `json:"notes,omitempty"`
-	ElapsedSeconds  int                             `json:"elapsedSeconds"`
-	AudioSeconds    float64                         `json:"audioSeconds,omitempty"`
-	AudioRate       float64                         `json:"audioRate,omitempty"`
-	AudioTrack      int                             `json:"audioTrack,omitempty"`
-	AudioEnded      bool                            `json:"audioEnded,omitempty"`
-	ActivityDates   []string                        `json:"activityDates,omitempty"`
-	CreatedAt       string                          `json:"createdAt"`
-	UpdatedAt       string                          `json:"updatedAt"`
+	RecoverySource    string                          `json:"recoverySource,omitempty"`
+	CommitID          string                          `json:"commitId,omitempty"`
+	CommitFingerprint string                          `json:"commitFingerprint,omitempty"`
+	CommitRevision    int                             `json:"commitRevision,omitempty"`
+	Explanations      map[string]objectiveExplanation `json:"explanations,omitempty"`
+	ID                string                          `json:"id"`
+	Revision          int                             `json:"revision"`
+	PackID            string                          `json:"packId"`
+	UnitID            string                          `json:"unitId"`
+	ExamID            string                          `json:"examId,omitempty"`
+	StartedAt         string                          `json:"startedAt,omitempty"`
+	DeadlineAt        string                          `json:"deadlineAt,omitempty"`
+	Mode              string                          `json:"mode"`
+	Status            string                          `json:"status"`
+	ReviewOf          string                          `json:"reviewOf,omitempty"`
+	ReviewQuestions   []string                        `json:"reviewQuestions,omitempty"`
+	Highlights        []libraryHighlight              `json:"highlights,omitempty"`
+	Answers           map[string][]string             `json:"answers"`
+	Marked            []string                        `json:"marked,omitempty"`
+	Notes             map[string]string               `json:"notes,omitempty"`
+	ElapsedSeconds    int                             `json:"elapsedSeconds"`
+	AudioSeconds      float64                         `json:"audioSeconds,omitempty"`
+	AudioRate         float64                         `json:"audioRate,omitempty"`
+	AudioTrack        int                             `json:"audioTrack,omitempty"`
+	AudioEnded        bool                            `json:"audioEnded,omitempty"`
+	ActivityDates     []string                        `json:"activityDates,omitempty"`
+	CreatedAt         string                          `json:"createdAt"`
+	UpdatedAt         string                          `json:"updatedAt"`
 }
 
 type libraryHighlight struct {
@@ -70,17 +74,31 @@ func (s *diskStore) loadAttemptLocked(id string) (libraryAttempt, error) {
 	if err != nil {
 		return attempt, err
 	}
-	raw, err := os.ReadFile(path)
+	backupPath, err := s.libraryPathLocked("attempts", id+".backup.json")
 	if err != nil {
 		return attempt, err
 	}
-	if err := json.Unmarshal(raw, &attempt); err != nil {
-		return attempt, err
+	var lastErr error = os.ErrNotExist
+	for _, candidate := range []string{path, backupPath} {
+		raw, err := os.ReadFile(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return attempt, err
+		}
+		attempt = libraryAttempt{}
+		if json.Unmarshal(raw, &attempt) == nil && attempt.ID == id && attempt.Revision >= 1 &&
+			(attempt.Mode == "practice" || attempt.Mode == "simulation") && (attempt.Status == "draft" || attempt.Status == "submitted") {
+			attempt.RecoverySource = ""
+			if candidate != path {
+				attempt.RecoverySource = "backup"
+			}
+			return attempt, nil
+		}
+		lastErr = errors.New("练习数据损坏")
 	}
-	if attempt.ID != id || attempt.Revision < 1 {
-		return attempt, errors.New("练习数据损坏")
-	}
-	return attempt, nil
+	return libraryAttempt{}, lastErr
 }
 
 func (s *diskStore) validateAttemptLocked(attempt libraryAttempt) error {
@@ -245,15 +263,31 @@ func (s *diskStore) validateAttemptLocked(attempt libraryAttempt) error {
 func (s *diskStore) saveAttempt(attempt libraryAttempt, directoryID ...string) (libraryAttempt, error) {
 	// AI explanations are written only by their dedicated validated endpoint.
 	attempt.Explanations = nil
+	attempt.CommitID, attempt.CommitFingerprint, attempt.CommitRevision = "", "", 0
+	attempt.RecoverySource = ""
+	var commitIDs []string
+	if len(directoryID) > 1 {
+		commitIDs = directoryID[1:]
+	}
+	commit, commitErr := identifyCommit(commitIDs, "attempt", strconv.Itoa(attempt.Revision), attempt)
+	if commitErr != nil {
+		return attempt, commitErr
+	}
 	s.Lock()
 	defer s.Unlock()
 	if err := s.checkDirectoryLocked(directoryID...); err != nil {
 		return attempt, err
 	}
+	previous, err := s.loadAttemptLocked(attempt.ID)
+	if err == nil && commit.ID != "" && previous.CommitID == commit.ID {
+		if previous.CommitFingerprint != commit.Fingerprint || previous.CommitRevision != previous.Revision {
+			return attempt, errAttemptConflict
+		}
+		return previous, nil
+	}
 	if err := s.validateAttemptLocked(attempt); err != nil {
 		return attempt, err
 	}
-	previous, err := s.loadAttemptLocked(attempt.ID)
 	if err == nil {
 		if previous, expired, expireErr := s.expireAttemptLocked(previous); expireErr != nil {
 			return attempt, expireErr
@@ -318,10 +352,21 @@ func (s *diskStore) saveAttempt(attempt libraryAttempt, directoryID ...string) (
 	}
 	attempt.ActivityDates = uniqueDates
 	attempt.Revision++
+	attempt.CommitID, attempt.CommitFingerprint, attempt.CommitRevision = commit.ID, commit.Fingerprint, attempt.Revision
 	attempt.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	path, err := s.libraryPathLocked("attempts", attempt.ID+".json")
 	if err != nil {
 		return attempt, err
+	}
+	if raw, readErr := os.ReadFile(path); readErr == nil {
+		var stored libraryAttempt
+		if json.Unmarshal(raw, &stored) != nil || stored.ID != previous.ID || stored.Revision != previous.Revision {
+			if err := preserveDamagedFile(path, raw); err != nil {
+				return attempt, err
+			}
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return attempt, readErr
 	}
 	if previous.Revision > 0 {
 		backupPath, err := s.libraryPathLocked("attempts", attempt.ID+".backup.json")
@@ -383,7 +428,7 @@ func registerLibraryAttemptsAPI(mux *http.ServeMux) {
 			writeError(w, 400, "练习格式无效")
 			return
 		}
-		saved, err := disk.saveAttempt(attempt, r.Header.Get("X-ELP-Directory"))
+		saved, err := disk.saveAttempt(attempt, r.Header.Get("X-ELP-Directory"), r.Header.Get("X-ELP-Commit"))
 		if err != nil {
 			status := 400
 			if errors.Is(err, errAttemptConflict) || errors.Is(err, errDirectoryChanged) {
@@ -423,11 +468,14 @@ func registerLibraryAttemptsAPI(mux *http.ServeMux) {
 			return
 		}
 		items := []libraryAttempt{}
+		seen := map[string]bool{}
 		for _, entry := range entries {
 			id := strings.TrimSuffix(entry.Name(), ".json")
-			if !libraryID.MatchString(id) || entry.IsDir() {
+			id = strings.TrimSuffix(id, ".backup")
+			if !libraryID.MatchString(id) || entry.IsDir() || seen[id] {
 				continue
 			}
+			seen[id] = true
 			attempt, err := disk.loadAttemptLocked(id)
 			if err != nil {
 				writeError(w, 500, "练习记录损坏，请从备份恢复")

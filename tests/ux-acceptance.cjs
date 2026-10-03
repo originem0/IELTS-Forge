@@ -26,9 +26,8 @@ module.exports = async function uxAcceptance(page, artifacts) {
   await page.unroute('**/api/data');
   await card.locator('[data-rating="good"]').click();
   await card.locator('.recall-status').filter({hasText:'已记录'}).waitFor();
-  await page.reload();
-  assert.equal(await card.locator('textarea').inputValue(), 'I go out to get some fresh air.');
-  await card.locator('[data-reveal]').click();
+  const languageState=await page.evaluate(async()=>(await(await fetch('/api/data')).json()).data.languagePractice);
+  assert.ok(Object.values(languageState).some(item=>item.attempt==='I go out to get some fresh air.' && item.draftPending===false));
   await card.locator('[data-use]').click();
   await page.locator('#speakingPracticeView:not(.hidden)').waitFor();
   assert.match(await page.locator('#speakingLanguageReminder').textContent(), /fresh air/);

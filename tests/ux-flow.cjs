@@ -78,6 +78,7 @@ const server=http.createServer(async(req,res)=>{
   assert.equal(await page.locator('#reviewWorkspace').isVisible(), true, 'failed retry keeps the original report accessible');
   failWrites = false;
   await page.locator('#retryReviewSource').click();
+  await page.waitForURL('**/#speaking');
   assert.equal(data.speaking.length, countBeforeFailure + 1);
   assert.equal(data.speaking.find(item => item.id === 's1').transcript, originalSpeaking.transcript);
   await page.waitForURL('**/#speaking');

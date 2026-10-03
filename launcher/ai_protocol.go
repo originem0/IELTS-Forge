@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -56,6 +57,9 @@ func validateAIEndpoint(c aiConfig) error {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("请填写不含账号、查询参数或片段的 http / https 接口地址")
 	}
+	if err := validateAITransport(u); err != nil {
+		return err
+	}
 	switch protocolOf(c) {
 	case "openai", "anthropic", "gemini":
 	default:
@@ -79,7 +83,24 @@ func aiURL(c aiConfig, resource string) string {
 	}
 	return base + "/" + resource
 }
+func validateAITransport(u *url.URL) error {
+	if u != nil && u.Scheme == "https" && u.Hostname() != "" {
+		return nil
+	}
+	if u != nil && u.Scheme == "http" {
+		host := u.Hostname()
+		if strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback() {
+			return nil
+		}
+	}
+	return errors.New("远程 AI 接口必须使用 HTTPS；仅本机回环地址允许 HTTP")
+}
+
 func doAIRequest(r *http.Request) (*http.Response, error) {
+	// Recheck persisted legacy configurations at the actual send boundary.
+	if err := validateAITransport(r.URL); err != nil {
+		return nil, err
+	}
 	// Custom key headers are not protected by Go's Authorization redirect rules.
 	// Refuse redirects rather than leak either station's key to another origin.
 	transport := *client
@@ -141,6 +162,9 @@ func requestAIJSON(ctx context.Context, c aiConfig, method, target string, paylo
 	}
 	var parsed map[string]any
 	if json.Unmarshal(raw, &parsed) != nil {
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			return nil, outputFormatError("模型服务返回了无法解析的响应")
+		}
 		return nil, fmt.Errorf("模型服务返回了无法解析的响应（HTTP %d），请检查接口协议和地址", response.StatusCode)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -254,7 +278,7 @@ func callNativeChat(ctx context.Context, c aiConfig, messages []chatMessage, tem
 			first, _ := candidates[0].(map[string]any)
 			reason, _ := first["finishReason"].(string)
 			if reason == "MAX_TOKENS" {
-				return "", errors.New("模型输出达到长度上限，请更换模型或缩短输入")
+				return "", outputFormatError("模型输出达到长度上限，请更换模型或缩短输入")
 			}
 			if reason != "" && reason != "STOP" {
 				return "", fmt.Errorf("模型没有完成回答（%s）", reason)
@@ -273,7 +297,10 @@ func callNativeChat(ctx context.Context, c aiConfig, messages []chatMessage, tem
 		}
 	} else {
 		if parsed["stop_reason"] == "max_tokens" {
-			return "", errors.New("模型输出达到长度上限，请更换模型或缩短输入")
+			return "", outputFormatError("模型输出达到长度上限，请更换模型或缩短输入")
+		}
+		if reason, _ := parsed["stop_reason"].(string); reason != "" && reason != "end_turn" && reason != "stop_sequence" {
+			return "", fmt.Errorf("模型没有完成回答（%s）", reason)
 		}
 		parts, _ := parsed["content"].([]any)
 		for _, p := range parts {

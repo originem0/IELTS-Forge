@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 const maxTranscriptionAudio = 16 << 20
 
 var transcriptionLock sync.Mutex
+var errNoSpeech = errors.New("没有识别出清晰语音，请回听录音后重试")
 
 func whisperPaths() (string, string, error) {
 	dir, err := findResourceDir("whisper")
@@ -93,7 +95,7 @@ func transcribeWAV(ctx context.Context, engine, model string, data []byte) (stri
 	}
 	result := strings.TrimSpace(string(text))
 	if result == "" {
-		return "", fmt.Errorf("没有识别出清晰语音，请回听录音后重试")
+		return "", errNoSpeech
 	}
 	return result, nil
 }
@@ -123,6 +125,10 @@ func handleTranscription(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	text, err := transcribeWAV(ctx, engine, model, data)
 	if err != nil {
+		if errors.Is(err, errNoSpeech) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error(), "code": "no_speech"})
+			return
+		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}

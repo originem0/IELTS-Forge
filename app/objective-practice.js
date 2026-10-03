@@ -8,6 +8,7 @@
   let generation = 0;
   let session = null;
   let explanationJob = null;
+  const historyViews = {};
   const provenanceLabel = (...args) => window.ELPLibrary.provenanceLabel(...args);
   const kindNames = { text: "填空", single: "选择 / 判断", matching: "匹配", multiple: "多选" };
   const el = (tag, text, className) => {
@@ -218,8 +219,7 @@
   }
   async function overview(token) {
     const top = shell(`${skillName()}练习`, "首答检验理解，复盘找到依据。重练单独记录。");
-    top.append(button("＋ 新建练习", () => go(`${activeSkill}/new`), "button-primary"));
-    top.append(button("整套模拟", () => go(`${activeSkill}/mock`)));
+    top.remove();
     const records = (await api("attempts")).attempts;
     const reading = [];
     for (const record of records) {
@@ -229,12 +229,15 @@
     if (token !== generation) return;
     const plan = window.ELPStudyPlan?.today();
     const planned = el("section", undefined, "panel objective-plan"); planned.append(el("h3", "今日安排"));
-    const tasks = (plan?.tasks || []).filter(task => task.kind === activeSkill || task.kind === `${activeSkill}-review`);
+    const tasks = (plan?.tasks || []).filter(task => task.kind === activeSkill || task.kind === `${activeSkill}-review` || task.kind === "recall" && task.skill === activeSkill);
     if (plan?.day?.budgetNote) {
       const deferred=(plan.day.deferred||[]).filter(name=>name.includes(skillName()));
       planned.append(el("p",`今日总安排 ${plan.day.usedMinutes}/${plan.day.budgetMinutes} 分钟${deferred.length?`；本科未排入或缩短：${deferred.join("、")}`:""}。`,"muted"));
     }
-    if (!tasks.length) planned.append(el("p", plan?.day ? "今天没有安排本科技能任务，可以复盘历史记录或自由练习。" : "还没有学习计划，可以自由练习或先设置目标。"), button("调整计划", () => go("plan"), "button-quiet"));
+    if (!tasks.length) {
+      planned.classList.add("is-empty");
+      planned.replaceChildren(el("p", plan?.day ? "今天没有安排任务，可自由练习或复盘。" : "尚未安排学习计划，可先自由练习。"), button("调整计划", () => go("plan"), "button-quiet"));
+    }
     for (const task of tasks) {
       const row = el("div", undefined, "objective-plan-task"); const label = el("label"); const check = el("input"); check.type = "checkbox"; check.checked = Boolean(plan.progress[task.id]); check.dataset.objectivePlan = task.id;
       check.addEventListener("change", async () => { check.disabled = true; try { await window.ELPStudyPlan.mark(task.id, check.checked); } catch (error) { check.checked = !check.checked; showError(error); } finally { check.disabled = false; } });
@@ -244,18 +247,38 @@
     const count = el("div", undefined, "objective-summary");
     count.append(el("p", `首次完成 ${reading.filter(item => item.record.status === "submitted" && !item.record.reviewOf && item.record.mode !== "simulation").length} ${activeSkill === "reading" ? "篇" : "段"}`), el("p", `复习完成 ${reading.filter(item => item.record.status === "submitted" && item.record.reviewOf && item.record.mode !== "simulation").length} 次`), el("p", `整套模拟 ${reading.filter(item => item.record.status === "submitted" && item.record.mode === "simulation").length} 次`));
     root().append(count);
-    const history = el("section", undefined, "panel objective-library"); history.append(el("h3", "练习记录"));
-    const controls = el("div", undefined, "button-row"); history.append(controls);
-    const list = el("div"); history.append(list); root().append(history);
-    let selectedFilter = "all";
-    const render = filter => {
-      selectedFilter = filter;
+    const history = el("section", undefined, "panel objective-library objective-history"); history.append(el("h3", "练习记录"));
+    const toolbar = el("div", undefined, "objective-history-toolbar");
+    const controls = el("div", undefined, "button-row");
+    controls.setAttribute("role", "group"); controls.setAttribute("aria-label", "筛选练习记录");
+    const view = historyViews[activeSkill] ||= { filter: "all", query: "", page: 0 };
+    const search = el("input"); search.type = "search"; search.placeholder = "搜索题目…"; search.setAttribute("aria-label", "搜索练习记录的题目"); search.value = view.query;
+    toolbar.append(controls, search); history.append(toolbar);
+    const list = el("div", undefined, "objective-history-list");
+    const footer = el("div", undefined, "objective-history-footer");
+    const status = el("span", undefined, "objective-history-status"); status.setAttribute("role", "status");
+    const pages = el("nav", undefined, "objective-history-pages"); pages.setAttribute("aria-label", "练习记录分页");
+    const previous = button("上一页", () => { view.page--; render(); });
+    const pageNumber = el("span");
+    const next = button("下一页", () => { view.page++; render(); });
+    pages.append(previous, pageNumber, next); footer.append(status, pages);
+    history.append(list, footer); root().append(history);
+    // Only the visible page gets controls. Retain each module's view when returning from an attempt.
+    reading.sort((a, b) => b.record.updatedAt.localeCompare(a.record.updatedAt));
+    const pageSize = 10;
+    const render = () => {
       list.replaceChildren();
-      controls.querySelectorAll("button").forEach(node => node.setAttribute("aria-pressed", String(node.dataset.filter === filter)));
-      const items = reading.filter(item => filter === "all" || (filter === "simulation" ? item.record.mode === "simulation" : item.record.status === filter)).sort((a, b) => b.record.updatedAt.localeCompare(a.record.updatedAt));
-      for (const { record, unit } of items) {
+      controls.querySelectorAll("button").forEach(node => node.setAttribute("aria-pressed", String(node.dataset.filter === view.filter)));
+      const query = view.query.trim().toLocaleLowerCase();
+      const items = reading.filter(({record, unit}) => (view.filter === "all" || (view.filter === "simulation" ? record.mode === "simulation" : record.status === view.filter)) && (!query || unit.title.toLocaleLowerCase().includes(query)));
+      const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+      view.page = Math.max(0, Math.min(view.page, pageCount - 1));
+      const offset = view.page * pageSize;
+      for (const { record, unit } of items.slice(offset, offset + pageSize)) {
         const row = el("article", undefined, "objective-library-row objective-history-row"); const text = el("div");
+        row.dataset.attemptId = record.id;
         text.append(el("h4", unit.title), el("p", `${record.mode === "simulation" ? "整套模拟 · " : ""}${record.reviewOf ? "复习" : "首次作答"} · ${record.status === "draft" ? "未完成" : "已完成"} · ${clock(record.elapsedSeconds)} · ${new Date(record.updatedAt).toLocaleDateString()}`));
+        text.firstChild.title = unit.title;
         const remove = button("删除", async () => {
           if (!confirm("确定删除这条练习记录吗？题目和其他练习记录会保留。")) return;
           await api(`attempts/${record.id}`, { method: "DELETE", headers: { "If-Match": String(record.revision) } });
@@ -266,15 +289,23 @@
           count.children[0].textContent = `首次完成 ${reading.filter(item => item.record.status === "submitted" && !item.record.reviewOf && item.record.mode !== "simulation").length} ${activeSkill === "reading" ? "篇" : "段"}`;
           count.children[1].textContent = `复习完成 ${reading.filter(item => item.record.status === "submitted" && item.record.reviewOf && item.record.mode !== "simulation").length} 次`;
           count.children[2].textContent = `整套模拟 ${reading.filter(item => item.record.status === "submitted" && item.record.mode === "simulation").length} 次`;
-          render(selectedFilter);
+          render();
         }, "record-delete");
         remove.setAttribute("aria-label", `删除练习记录：${unit.title}`);
-        row.append(text, button(record.status === "draft" ? "继续作答" : "查看复盘", () => go(`${activeSkill}/${record.status === "draft" ? "session" : "report"}/${record.id}`)), remove); list.append(row);
+        const actions = el("div", undefined, "objective-history-actions");
+        actions.append(button(record.status === "draft" ? "继续作答" : "查看复盘", () => go(`${activeSkill}/${record.status === "draft" ? "session" : "report"}/${record.id}`)), remove);
+        row.append(text, actions); list.append(row);
       }
-      if (!items.length) list.append(el("p", "还没有这类练习记录。"));
+      if (!items.length) list.append(el("p", query ? "没有匹配的记录，试试其他关键词。" : "还没有这类练习记录。", "muted"));
+      status.textContent = items.length ? `共 ${items.length} 条 · 第 ${offset + 1}–${Math.min(offset + pageSize, items.length)} 条` : "共 0 条";
+      pageNumber.textContent = `${view.page + 1} / ${pageCount}`;
+      previous.disabled = view.page === 0; next.disabled = view.page === pageCount - 1;
+      previous.dataset.busyLocked = String(previous.disabled); next.dataset.busyLocked = String(next.disabled);
+      pages.classList.toggle("hidden", pageCount === 1);
     };
-    for (const [value, label] of [["all", "全部"], ["draft", "未完成"], ["submitted", "已完成"], ["simulation", "整套模拟"]]) { const control = button(label, () => render(value), "button-quiet"); control.dataset.filter = value; controls.append(control); }
-    render("all");
+    for (const [value, label] of [["all", "全部"], ["draft", "未完成"], ["submitted", "已完成"], ["simulation", "整套模拟"]]) { const control = button(label, () => { view.filter = value; view.page = 0; render(); }, "button-quiet"); control.dataset.filter = value; controls.append(control); }
+    search.addEventListener("input", () => { view.query = search.value; view.page = 0; render(); });
+    render();
   }
   async function start(packId, unitId, reviewOf = "", reviewQuestions = [], examId = "") {
     const token = generation; const skill = activeSkill;
@@ -282,7 +313,7 @@
     // A fresh ID and an immutable question reference distinguish first attempts
     // from explicit reviews; answers are never copied into a new attempt.
     const id = crypto.randomUUID();
-    await api(`attempts/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, revision: 0, packId, unitId, examId, mode: examId && !reviewQuestions.length ? "simulation" : "practice", status: "draft", reviewOf, reviewQuestions, answers: {}, elapsedSeconds: 0, createdAt: "", updatedAt: "" }) });
+    await sendAttemptCommit({id:crypto.randomUUID(),recordId:id,directoryId:window.ELPLibrary.directoryId,body:JSON.stringify({id,revision:0,packId,unitId,examId,mode:examId && !reviewQuestions.length ? "simulation" : "practice",status:"draft",reviewOf,reviewQuestions,answers:{},elapsedSeconds:0,createdAt:"",updatedAt:""})});
     if (token === generation) go(`${skill}/session/${id}`);
   }
   async function startFromLibrary(packId, unitId) {
@@ -308,15 +339,33 @@
       if (s.closed) return;
       const version = s.version; const snapshot = structuredClone(s.record);
       try {
-        const saved = await api(`attempts/${snapshot.id}`, { method: "PUT", headers: { "Content-Type": "application/json", "X-ELP-Directory": s.directoryId }, body: JSON.stringify(snapshot) });
+        if (s.pendingCommit) {
+          const prior = s.pendingCommit;
+          const acknowledged = await sendAttemptCommit(prior);
+          s.pendingCommit = null;
+          s.record.revision = acknowledged.revision; snapshot.revision = acknowledged.revision;
+          if (acknowledged.status === "submitted") {
+            Object.assign(s.record,acknowledged); s.savedVersion=prior.version; s.closed=true;
+            if (s === session) go(`${s.unit.skill}/report/${acknowledged.id}`);
+            return;
+          }
+        }
+        s.pendingCommit = {id:crypto.randomUUID(),body:JSON.stringify(snapshot),recordId:snapshot.id,directoryId:s.directoryId,version};
+        const saved = await sendAttemptCommit(s.pendingCommit);
+        s.pendingCommit = null;
         s.record.revision = saved.revision; s.record.updatedAt = saved.updatedAt; s.savedVersion = version;
-        window.dispatchEvent(new CustomEvent("elp:practice-saved"));
+        if (saved.status === "submitted") {
+          try { await window.ELPStudyPlan?.syncObjective(); }
+          catch (error) { showError(new Error(`作答已保存，复习进度暂未写入：${error.message}`)); }
+        }
+        window.dispatchEvent(new CustomEvent("elp:practice-saved", { detail: { submitted: saved.status === "submitted" } }));
         if (saved.status === "submitted" && snapshot.status !== "submitted") {
           Object.assign(s.record, saved); s.savedVersion = s.version; s.closed = true; s.paused = true; s.audio?.pause();
           if (s === session && location.hash === `#${s.unit.skill}/session/${saved.id}`) go(`${s.unit.skill}/report/${saved.id}`);
         }
         if (s === session) status(s.savedVersion === s.version ? "已保存到本机" : "正在保存……");
       } catch (error) {
+        if (error.status) s.pendingCommit = null;
         if (error.status === 409 && s.record.mode === "simulation") {
           const latest = await api(`attempts/${s.record.id}`);
           if (latest.status === "submitted") { Object.assign(s.record, latest); s.closed = true; s.savedVersion = s.version; if (s === session && location.hash === `#${s.unit.skill}/session/${latest.id}`) go(`${s.unit.skill}/report/${latest.id}`); return; }
@@ -325,6 +374,16 @@
       }
     });
     return s.queue;
+  }
+
+  async function sendAttemptCommit(operation) {
+    for (let attempt=0;attempt<2;attempt++) {
+      try {
+        const result=await api(`attempts/${operation.recordId}`,{method:"PUT",headers:{"Content-Type":"application/json","X-ELP-Directory":operation.directoryId,"X-ELP-Commit":operation.id},body:operation.body});
+        if (!Number.isInteger(result.revision) || result.revision<1) throw new Error("未收到有效保存回执");
+        return result;
+      } catch(error) { if (error.status || attempt) throw error; }
+    }
   }
   function paragraphs(unit, record, editable) {
     const panel = el("section", undefined, "panel objective-passage"); panel.append(el("h3", unit.title));
@@ -413,7 +472,7 @@
     actions.append(timer); if (!simulation) actions.append(pause);
     actions.append(button("完成作答", finish, "button-primary"), button(simulation ? "保存并离开（计时继续）" : "保存并返回", async () => { const navigation = generation; s.audio?.pause(); await save(s); if (navigation === generation) go(s.unit.skill); }, "button-quiet"));
     top.append(actions);
-    const saved = el("span", "已保存到本机"); saved.id = "objectiveSave"; actions.append(saved);
+    const saved = el("span", record.recoverySource ? "已从备份恢复，近期修改可能缺失" : "已保存到本机"); saved.id = "objectiveSave"; actions.append(saved);
     const navigation = el("div", undefined, "objective-question-nav");
     const progress = el("span", "", "objective-progress"); progress.id = "objectiveProgress";
     const links = el("div", undefined, "objective-question-links"); links.setAttribute("role", "group"); links.setAttribute("aria-label", "跳转题目");
@@ -655,8 +714,15 @@
       else await overview(token);
     } catch (error) { if (token === generation) showError(error); }
   });
-  window.addEventListener("elp:storage-changed", () => { generation++; playingAudio?.pause(); if (session) { clearInterval(session.interval); clearTimeout(session.debounce); } session = null; });
-  window.ELPObjective = Object.freeze({ start: startFromLibrary, flush: async () => { if (explanationJob) throw new Error("请等待错题讲解保存完成"); playingAudio?.pause(); if (session) await save(session); } });
+  window.addEventListener("elp:storage-changed", () => { generation++; delete historyViews.reading; delete historyViews.listening; playingAudio?.pause(); if (session) { clearInterval(session.interval); clearTimeout(session.debounce); } session = null; });
+  window.ELPObjective = Object.freeze({ start: startFromLibrary,
+    startReview: async (recordId, questions) => {
+      const record = await api(`attempts/${recordId}`), data = await pack(record.packId);
+      const unit = record.examId ? data.exams?.find(item => item.id === record.examId) : data.units.find(item => item.id === record.unitId);
+      if (!unit) throw new Error("原题不存在");
+      activeSkill = unit.skill; await start(record.packId, record.unitId, record.id, questions, record.examId || "");
+    },
+    flush: async () => { if (explanationJob) throw new Error("请等待错题讲解保存完成"); playingAudio?.pause(); if (session) await save(session); } });
   window.addEventListener("beforeunload", event => { if (explanationJob) { event.preventDefault(); event.returnValue = ""; } });
   window.addEventListener("beforeunload", event => { if (session && session.version !== session.savedVersion) { save(session).catch(() => {}); event.preventDefault(); event.returnValue = ""; } });
 })();

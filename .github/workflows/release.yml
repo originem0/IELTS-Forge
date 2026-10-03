@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22.x"
+          go-version: "1.27.x"
           cache-dependency-path: launcher/go.mod
       - uses: actions/setup-node@v4
         with:
@@ -39,7 +39,7 @@ jobs:
           $env:ELP_PLAYWRIGHT_MODULE="$env:RUNNER_TEMP/elp-browser/node_modules/playwright"
           go -C launcher test ./... -count=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($test in @('ui-smoke.cjs','markdown-review.cjs','correction-notebook.cjs')) {
+          foreach ($test in @('ui-smoke.cjs','markdown-review.cjs','correction-notebook.cjs','study-loop-ui.cjs')) {
             node "tests/$test"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -55,7 +55,7 @@ jobs:
     # build-whisper.ps1 uses the Visual Studio 17 2022 generator.
     # windows-latest can migrate to a newer VS major without that toolchain.
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,8 +63,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22.x"
+          go-version: "1.27.x"
           cache-dependency-path: launcher/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Check static app
         shell: pwsh
@@ -86,16 +90,42 @@ jobs:
           Pop-Location
 
       - name: Build portable package
+        id: package
         shell: pwsh
         run: |
           $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "${{ github.sha }}".Substring(0, 7) }
-          ./build-portable.ps1 -Version $version
+          $zip = ./build-portable.ps1 -Version $version | Select-Object -Last 1
+          if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) { throw 'Missing final ZIP' }
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Verify the final ZIP with its actual executable
+        shell: pwsh
+        env:
+          ELP_PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/elp-package-browser" --no-save --ignore-scripts --no-audit --no-fund playwright@1.58.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/elp-package-browser/node_modules/.bin/playwright.cmd" install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:ELP_PLAYWRIGHT_MODULE="$env:RUNNER_TEMP/elp-package-browser/node_modules/playwright"
+          $env:ELP_BROWSER_CHANNEL='bundled'
+          $smokeRoot=Join-Path $env:RUNNER_TEMP ('elp-final-package-' + [Guid]::NewGuid().ToString('N'))
+          Expand-Archive -LiteralPath '${{ steps.package.outputs.zip }}' -DestinationPath $smokeRoot
+          $env:ELP_PACKAGE_ROOT=Join-Path $smokeRoot 'EnglishLearnPath-Windows-x64'
+          $sampleRoot=Join-Path $smokeRoot 'upstream-sample'
+          Expand-Archive -LiteralPath (Join-Path $env:ELP_PACKAGE_ROOT 'whisper/whisper.cpp-source.zip') -DestinationPath $sampleRoot
+          $sample=Get-ChildItem -LiteralPath $sampleRoot -Recurse -Filter 'jfk.wav' -File | Select-Object -First 1
+          if (-not $sample) { throw 'Missing public transcription acceptance sample' }
+          $env:ELP_WHISPER_TEST_WAV=$sample.FullName
+          node tests/package-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: EnglishLearnPath-Windows-x64-Full
-          path: dist/*.zip
+          path: ${{ steps.package.outputs.zip }}
           if-no-files-found: error
 
   publish:

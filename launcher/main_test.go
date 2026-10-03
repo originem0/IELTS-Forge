@@ -207,7 +207,7 @@ func TestProviderNeutralOutputContracts(t *testing.T) {
 	if err := validateOutputContract(wrongOrder, "review-markdown-v1-writing"); err == nil {
 		t.Fatal("review headings in the wrong order must be rejected")
 	}
-	bank := `{"summary":"updated","speaking":[],"writing":[]}`
+	bank := `{"summary":"updated","speaking":[],"writing":[],"noContentSources":[{"sourceKey":"fixture","reason":"Only repeats the prompt."}]}`
 	if err := validateOutputContract(bank, "personal-language-bank-json-v1"); err != nil {
 		t.Fatalf("valid language bank rejected: %v", err)
 	}
@@ -218,8 +218,17 @@ func TestProviderNeutralOutputContracts(t *testing.T) {
 		t.Fatal("language bank fields with the wrong type must be rejected")
 	}
 	plan := `{"summary":"plan","priorities":[],"phases":[]}`
-	if err := validateOutputContract(plan, "study-plan-json-v1"); err != nil {
-		t.Fatalf("valid plan rejected: %v", err)
+	if err := validateOutputContract(plan, "study-plan-json-v1"); err == nil {
+		t.Fatal("empty plan accepted")
+	}
+	for contract, content := range map[string]string{
+		"study-plan-json-v1":             `{"summary":"plan","priorities":[],"phases":[null,42]}`,
+		"personal-language-bank-json-v1": `{"summary":"","speaking":[],"writing":[]}`,
+		"review-markdown-v1-writing":     "主题：x\n### 评分与小分\n### 总体评价\n### 确定语法错误\n### 原文优化建议\n### 目标水平范文\n### 最终值得记忆的语料",
+	} {
+		if err := validateOutputContract(content, contract); err == nil {
+			t.Fatalf("accepted unusable %s", contract)
+		}
 	}
 }
 

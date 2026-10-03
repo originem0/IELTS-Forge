@@ -9,6 +9,7 @@
     activityDates: [],
     studyPlan: null,
     planProgress: {},
+    learning: { events: [], days: {}, recordReviews: {}, objectiveItems: {}, observed: {} },
     mistakes: [],
     preferences: { aiProvider: "custom", aiBaseUrl: "", aiModel: "", speechLanguage: "en-GB", sidebarCollapsed: false }
   };
@@ -66,6 +67,7 @@
   let speakingScreenMode = "overview";
   const writingDraft = window.ELPPractice.createAutosave({ write: options => persistWriting(options) });
   const speakingDraft = window.ELPPractice.createAutosave({ write: options => persistSpeaking(options) });
+  const recallDrafts = window.ELPPractice.createAutosave({ write: () => saveState() });
   const aiTasks = window.ELPPractice.createTaskGate();
   const writingClock = window.ELPPractice.createClock();
   const recordingClock = window.ELPPractice.createClock();
@@ -114,9 +116,12 @@
   const normalized = value => String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
   const {askAi} = window.ELPAI.create({getConnected:()=>aiConnected,routeTo,media:window.ELPMedia,reviewFormatContract});
+  const study = window.ELPStudyCoordinator.create({ getState: () => state, save: saveState, today,
+    languageEntries: studyLanguageEntries, title: practiceTitle, open: openStudyTask,
+    changed: () => { renderTodayPlan(); renderReviewQueue(); renderWeeklyStudy(); } });
   const reviewView = window.ELPReview.create({
     getContext: () => ({state, reviewWorkspaceSelection, aiConnected, pendingWritingPromptImages}),
-    $, practiceTitle, showToast, saveReviewCorrection, correctionKey
+    $, practiceTitle, showToast, saveReviewCorrection, correctionKey, renderLanguageUse
   });
   const {renderAiFeedback,populateReviewWorkspace,refreshReviewWorkspace,releaseReviewAudio,closeReviewImageLightbox,openReviewImageLightbox} = reviewView;
 
@@ -132,12 +137,14 @@
       activityDates: Array.isArray(candidate.activityDates) ? candidate.activityDates : [],
       studyPlan: candidate.studyPlan && typeof candidate.studyPlan === "object" ? candidate.studyPlan : null,
       planProgress: candidate.planProgress && typeof candidate.planProgress === "object" ? candidate.planProgress : {},
+      learning: { events: [], days: {}, recordReviews: {}, objectiveItems: {}, observed: {}, ...(candidate.learning || {}) },
       mistakes: Array.isArray(candidate.mistakes) ? candidate.mistakes : [],
       preferences: candidate.preferences && typeof candidate.preferences === "object" ? { ...DEFAULT_STATE.preferences, ...candidate.preferences } : { ...DEFAULT_STATE.preferences }
     };
   }
 
   function saveState(markActivity = false, candidate = state) {
+    if (candidate === state) study.commitPending();
     if (markActivity && !state.activityDates.includes(today())) state.activityDates.push(today());
     renderMetrics();
     return candidate === state ? persistence.save() : persistence.replace(candidate);
@@ -161,7 +168,7 @@
   function updateDiskStatus(status) {
     if (!status) return;
     const directoryChanged = diskStatus?.directory !== status.directory;
-    if (directoryChanged) { metricGeneration++; recentObjectiveRecords = []; libraryMetrics = { reading: 0, listening: 0, activityDates: [], ready: false, failed: false }; }
+    if (directoryChanged) { study.reset({ directory: true }); metricGeneration++; recentObjectiveRecords = []; libraryMetrics = { reading: 0, listening: 0, activityDates: [], ready: false, failed: false }; }
     diskStatus = status;
     window.ELPLibrary?.setDirectory(status.directoryId || "");
     const bound = Boolean(status.bound ?? status.ready);
@@ -176,11 +183,16 @@
     $("#boundStorageDetails").classList.toggle("hidden", !bound);
     $("#openDataDirectory").disabled = !bound;
     $("#writeDataNow").disabled = !bound;
-    $("#writeDataNow").classList.add("hidden");
+    $("#writeDataNow").classList.toggle("hidden", !status.recoverySource);
+    $("#writeDataNow").textContent = status.recoverySource ? "恢复已验证的备份" : "重试保存";
     $("#dataDirectoryPath").textContent = status.directory || "尚未选择";
     $("#dataFileStatus").textContent = status.fileExists
       ? `数据文件已建立${status.lastWriteAt ? ` · 最近写入 ${new Date(status.lastWriteAt).toLocaleString()}` : ""}`
       : "数据文件将在第一次保存时建立";
+    if (status.recoverySource) {
+      $("#dataFileStatus").textContent = "主档案损坏或缺失，已载入完整校验通过的备份。恢复或继续保存会保留损坏原件；近期修改可能不在此备份中。";
+      topBadge.textContent = "档案已从备份载入";
+    }
     if (directoryChanged) window.dispatchEvent(new CustomEvent("elp:storage-changed"));
   }
 
@@ -293,6 +305,7 @@
     $(".sidebar").classList.remove("is-open");
     const hash = objectiveRoute ? `#${route}` : target === "review" ? `#review/${reviewWorkspaceSelection.module}/${encodeURIComponent(reviewWorkspaceSelection.id || "draft")}` : `#${target}`;
     appliedRoute = hash.slice(1);
+    syncPageActions();
     if (location.hash !== hash) history.pushState(null, "", hash);
     window.scrollTo({ top: 0, behavior: "smooth" });
     window.dispatchEvent(new CustomEvent("elp:route", { detail: target }));
@@ -321,7 +334,7 @@
     $("#metricStreak").textContent = calculateStreak();
     $("#homeMetrics").classList.toggle("hidden", total === 0 && !libraryMetrics.failed);
     $("#homeEmptyHistory").classList.toggle("hidden", total > 0 || libraryMetrics.failed);
-    updateHeroPrimaryAction(state.studyPlan, todayPlanTasks(), state.planProgress[today()] || {});
+    updateHeroPrimaryAction(state.studyPlan, todayPlanTasks(), study.progress());
   }
 
   async function refreshLibraryMetrics() {
@@ -347,6 +360,7 @@
       }
       if (token !== metricGeneration) return;
       recentObjectiveRecords = recent;
+      await study.syncObjective(history.attempts || []);
     } catch { if (token !== metricGeneration) return; libraryMetrics.failed = true; }
     renderMetrics();
   }
@@ -524,7 +538,7 @@
           days: dayNames.map(() => ({ ...targets }))
         }]
       };
-      state.planProgress = {};
+      study.reset();
       await saveState();
       renderStudyPlan();
       renderTodayPlan();
@@ -560,37 +574,23 @@
       button.disabled = true;
       const payload = {
         messages: [
-          { role: "system", content: "你是雅思四科学习规划师。规划写作、口语、阅读、听力，以及相关错题、词汇和语料复盘。听读使用本地题库；不要虚构题目或外部资源。计划会分层展示：首页汇总四科完成情况，各科概览展示自己的任务。因此任务说明必须简短、可直接执行，不要把四个模块混成一个长段落。只输出一个 JSON 对象，不要 Markdown。结构必须为 {summary:string, priorities:string[], phases:[阶段项]}。summary 不超过 120 个汉字，priorities 最多 4 条。phases 数量和顺序必须与用户提供的阶段窗口完全一致。每个阶段项只含 name、focus、days；days 必须是周一到周日顺序的 7 项数组，每项必须含 writing、speaking、reading、listening、writingReview、writingRewrite、speakingReview、readingReview、listeningReview、languageMinutes、reviewMinutes 十一个非负整数和 note 字符串，note 不超过 50 个汉字。writing、reading、listening 每天最多 1，speaking 每天最多 2；writingReview、writingRewrite、speakingReview、readingReview、listeningReview 每项最多 1。至少 40% 的可用时间安排给复盘、重写或重说、语料记忆和错题回收，并安排轻量日或休息日。写作闭环是完成写作、核对批改、记录确定语法错误与可复用表达、重写、对照检查；口语闭环是录音转写、回听校对、核对批改、整理表达、重说同题。整体计划覆盖全部阶段直到考试日，任务量必须符合每日可用时间。不要虚构用户没有提供的诊断。" },
-          { role: "user", content: `今天：${today()}\n预计考试日期：${profile.examDate}\n计划总天数：${totalDays}\n现有水平：${profile.currentLevel}\n目标水平：${profile.targetLevel}\n每日时间：${profile.dailyMinutes} 分钟\n重点与限制：${profile.focus || "未补充"}\n固定阶段窗口：${JSON.stringify(blueprints)}\n请为每个阶段安排不同的训练重点和周一至周日执行节奏。` }
+          { role: "system", content: "你是雅思四科学习规划师。规划写作、口语、阅读、听力，以及相关错题、词汇和语料复盘。听读使用本地题库；不要虚构题目或外部资源。计划会分层展示：首页汇总四科完成情况，各科概览展示自己的任务。因此任务说明必须简短、可直接执行，不要把四个模块混成一个长段落。只输出一个 JSON 对象，不要 Markdown。结构必须为 {summary:string, priorities:string[], phases:[阶段项]}。summary 不超过 120 个汉字，priorities 最多 4 条。phases 数量和顺序必须与用户提供的阶段窗口完全一致。每个阶段项只含 name、focus、days；days 必须是周一到周日顺序的 7 项数组，每项必须含 writing、speaking、reading、listening、writingReview、writingRewrite、speakingReview、readingReview、listeningReview、languageMinutes、reviewMinutes 十一个非负整数和 note 字符串，note 不超过 50 个汉字。writing、reading、listening 每天最多 1，speaking 每天最多 2；writingReview、writingRewrite、speakingReview、readingReview、listeningReview 每项最多 1。每天安排一个主要练习，剩余时间优先用于实际存在的复盘、重写或重说、语料和错题，并安排轻量日或休息日。每周覆盖用户目标内的四科；不要要求每天练全部科目，也不要用固定复盘比例挤掉整周新练习。写作闭环是完成写作、核对批改、记录确定语法错误与可复用表达、重写、对照检查；口语闭环是录音转写、回听校对、核对批改、整理表达、重说同题。整体计划覆盖全部阶段直到考试日，任务量必须符合每日可用时间。不要虚构用户没有提供的诊断。" },
+          { role: "user", content: `今天：${today()}\n预计考试日期：${profile.examDate}\n计划总天数：${totalDays}\n现有水平：${profile.currentLevel}\n目标水平：${profile.targetLevel}\n每日时间：${profile.dailyMinutes} 分钟\n重点与限制：${profile.focus || "未补充"}\n近七天实际学习证据：${JSON.stringify(study.summary())}\n当前到期内容：${study.queue().filter(item => window.ELPStudy.due(item.review, today())).length} 条\n固定阶段窗口：${JSON.stringify(blueprints)}\n请为每个阶段安排不同的训练重点和周一至周日执行节奏。` }
         ],
         temperature: 0,
         max_tokens: 3500,
         output_contract: "study-plan-json-v1"
       };
       let parsed, phases;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          let response;
-          try {
-            response = await window.ELPAI.send(payload);
-          } catch (error) {
-            error.retryableAiFailure = true;
-            throw error;
-          }
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            const failure = new Error(data.error || `AI 计划生成失败（HTTP ${response.status}）`);
-            const authFailure = /(?:API\s*Key|鉴权|认证|未授权|unauthori[sz]ed|forbidden|余额|quota)/i.test(failure.message);
-            failure.retryableAiFailure = !authFailure && [408, 425, 429, 500, 502, 503, 504].includes(response.status);
-            throw failure;
-          }
+      await window.ELPAI.validated(payload, data => {
           parsed = parseAiJson(data.content);
           if (!Array.isArray(parsed.phases) || parsed.phases.length !== blueprints.length) throw new Error("AI 返回的阶段数量与考试日期安排不一致");
           phases = blueprints.map((blueprint, index) => {
             const generated = parsed.phases[index] || {};
             if (!Array.isArray(generated.days) || generated.days.length !== 7) throw new Error(`AI 返回的“${blueprint.name}”阶段没有完整七天执行节奏`);
-            const requiredDayFields = ["writing", "speaking", "writingReview", "writingRewrite", "speakingReview", "languageMinutes", "reviewMinutes", "note"];
+            const requiredDayFields = ["writing", "speaking", "reading", "listening", "writingReview", "writingRewrite", "speakingReview", "readingReview", "listeningReview", "languageMinutes", "reviewMinutes", "note"];
             if (generated.days.some(day => !day || typeof day !== "object" || Array.isArray(day) || requiredDayFields.some(field => !Object.hasOwn(day, field)))) throw new Error(`AI 返回的“${blueprint.name}”阶段缺少每日必需字段`);
+            if (["writing", "speaking", "reading", "listening"].some(skill => !generated.days.some(day => Number(day[skill]) > 0))) throw new Error(`AI 返回的“${blueprint.name}”阶段未覆盖四科周计划`);
             return {
               ...blueprint,
               name: typeof generated.name === "string" ? generated.name.slice(0, 80) : blueprint.name,
@@ -598,14 +598,8 @@
               days: generated.days.map(normalizeAiPlanDay)
             };
           });
-          break;
-        } catch (error) {
-          const formatFailure = /(?:JSON|格式|字段|数组|阶段|七天|执行节奏|网页报告)/i.test(error.message);
-          if (attempt || (!formatFailure && !error.retryableAiFailure)) throw error;
-          result.textContent = formatFailure ? "AI 首次返回的计划结构不完整，正在自动重试一次……" : "AI 服务首次响应不稳定，正在自动重试一次……";
-          if (!formatFailure) await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      }
+      });
+      const previousPlan = state.studyPlan;
       state.studyPlan = {
         source: "ai",
         createdAt: new Date().toISOString(),
@@ -614,8 +608,8 @@
         priorities: Array.isArray(parsed.priorities) ? parsed.priorities.filter(item => typeof item === "string" && item.trim()).map(item => item.slice(0, 240)).slice(0, 8) : [],
         phases
       };
-      state.planProgress = {};
-      await saveState();
+      study.reset();
+      try { await saveState(); } catch (error) { state.studyPlan = previousPlan; throw error; }
       renderStudyPlan();
       renderTodayPlan();
       result.textContent = `AI 已生成覆盖 ${totalDays} 天、共 ${phases.length} 个阶段的考前计划，并永久写入本地数据文件。`;
@@ -700,30 +694,12 @@
     const phase = phasesForPlan(plan).find(item => dateString >= item.startDate && dateString <= item.endDate);
     if (!phase) return null;
     const day = normalizePlanDay(phase.days[mondayIndex(parsePlanDate(dateString))] || {});
-    return { ...window.ELPPlanBudget.allocate(day, plan.profile.dailyMinutes || 180, dateString), phaseName: phase.name };
+    const allocated = { ...window.ELPPlanBudget.allocate(day, plan.profile.dailyMinutes || 180, dateString, study.context()), phaseName: phase.name };
+    return dateString === today() ? study.day(allocated) : allocated;
   }
 
   function todayPlanTasks() {
-    const plan = state.studyPlan;
-    const dateString = today();
-    const target = planDayForDate(plan, dateString);
-    if (!target) return [];
-    const tasks = [
-      ...Array.from({ length: target.writing }, (_, index) => ({ id: `writing-${index}`, kind: "writing", title: `新写作 ${index + 1}`, detail: "完成一篇，系统自动保存；新输出保持少量，给后续复盘留时间" })),
-      ...Array.from({ length: target.speaking }, (_, index) => ({ id: `speaking-${index}`, kind: "speaking", title: `新口语 ${index + 1}`, detail: "一次录音，自动离线转写并写入本机" })),
-      ...Array.from({ length: target.reading }, (_, index) => ({ id: `reading-${index}`, kind: "reading", title: `阅读新题 ${index + 1}`, detail: "先作答，再定位原文依据，保留首次作答记录" })),
-      ...Array.from({ length: target.listening }, (_, index) => ({ id: `listening-${index}`, kind: "listening", title: `听力新题 ${index + 1}`, detail: "完成一个 Section，提交后对照原文回听" })),
-      ...Array.from({ length: target.writingReview }, (_, index) => ({ id: `writing-review-${index}`, kind: "writing-review", title: "写作反馈核对", detail: "只记录确定语法错误；把可选表达优化单独整理" })),
-      ...Array.from({ length: target.writingRewrite }, (_, index) => ({ id: `writing-rewrite-${index}`, kind: "writing-rewrite", title: "写作重写与对照", detail: "根据复盘重写关键段落或全文，再与原稿对照" })),
-      ...Array.from({ length: target.speakingReview }, (_, index) => ({ id: `speaking-review-${index}`, kind: "speaking-review", title: "口语回听与重说", detail: "回听核对转写、整理表达，再重说同一话题" })),
-      ...Array.from({ length: target.readingReview }, (_, index) => ({ id: `reading-review-${index}`, kind: "reading-review", title: "阅读错题与证据复盘", detail: "回到历史报告，核对同义替换，再只重练错题" })),
-      ...Array.from({ length: target.listeningReview }, (_, index) => ({ id: `listening-review-${index}`, kind: "listening-review", title: "听力回听与错题复盘", detail: "对照原文回听，再隐藏答案重练" }))
-    ];
-    if (target.languageMinutes) tasks.push({ id: "language-0", kind: "language-review", title: `常用语料记忆 ${target.languageMinutes} 分钟`, detail: "整理并主动回忆本题可复用的搭配、句型和例子" });
-    if (target.reviewMinutes) tasks.push({ id: "review-0", kind: "review", title: `错题与单词复盘 ${target.reviewMinutes} 分钟`, detail: "回看旧错误，完成一次主动回忆和改正" });
-    const costKeys = { "writing-review": "writingReview", "writing-rewrite": "writingRewrite", "speaking-review": "speakingReview", "reading-review": "readingReview", "listening-review": "listeningReview" };
-    const fresh = task => ["writing", "speaking", "reading", "listening"].includes(task.kind);
-    return tasks.map(task => ({ ...task, minutes: task.id === "language-0" ? target.languageMinutes : task.id === "review-0" ? target.reviewMinutes : window.ELPPlanBudget.costs[costKeys[task.kind] || task.kind] || 0 })).sort((a, b) => Number(fresh(a)) - Number(fresh(b)));
+    return study.tasks(planDayForDate(state.studyPlan, today()));
   }
 
   function renderTodayPlan() {
@@ -734,7 +710,7 @@
     const plan = state.studyPlan;
     const tasks = todayPlanTasks();
     const target = planDayForDate(plan, today());
-    const progress = state.planProgress[today()] || {};
+    const progress = study.progress();
     todayTaskActions = new Map(tasks.map(task => [task.id, task]));
     updateHeroPrimaryAction(plan, tasks, progress);
     if (!plan || !tasks.length) {
@@ -754,7 +730,7 @@
     meta.textContent = `距预计考试 ${daysLeft} 天 · ${target?.phaseName || "当前阶段"} · 今日${done === tasks.length ? "全部完成" : `${done}/${tasks.length} 已完成`}`;
     if (target?.budgetMinutes) meta.textContent += ` · 今日约 ${target.usedMinutes}/${target.budgetMinutes} 分钟`;
     const moduleSummary = (label, kinds) => {
-      const moduleTasks = tasks.filter(task => kinds.includes(task.kind));
+      const moduleTasks = tasks.filter(task => kinds.includes(task.kind) || task.kind === "recall" && kinds.includes(task.skill));
       const moduleDone = moduleTasks.filter(task => progress[task.id]).length;
       const status = !moduleTasks.length ? "今日未安排" : moduleDone === moduleTasks.length ? "今日已完成" : `待完成 ${moduleTasks.length - moduleDone} 项`;
       return `<article class="today-module-summary ${moduleTasks.length && moduleDone === moduleTasks.length ? "is-complete" : ""}"><div><span>${escapeHtml(label)}</span><strong>${moduleDone}/${moduleTasks.length}</strong></div><small>${escapeHtml(status)}</small></article>`;
@@ -777,12 +753,12 @@
 
   function renderPracticeOverviewPlans() {
     const tasks = todayPlanTasks();
-    const progress = state.planProgress[today()] || {};
+    const progress = study.progress();
     const target = planDayForDate(state.studyPlan, today());
     const render = (selector, kinds, fallback) => {
       const root = $(selector);
       if (!root) return;
-      const selected = tasks.filter(task => kinds.includes(task.kind));
+      const selected = tasks.filter(task => kinds.includes(task.kind) || task.kind === "recall" && kinds.includes(task.skill));
       root.closest?.(".overview-plan")?.classList.toggle("hidden", !state.studyPlan);
       if (!selected.length) {
         root.className = "overview-plan-list empty-state";
@@ -805,22 +781,30 @@
   function updateHeroPrimaryAction(plan, tasks, progress) {
     const button = $("#heroPrimaryAction");
     const continuation = homeContinuation();
-    const hasPractice = state.writings.length || state.speaking.length || libraryMetrics.reading || libraryMetrics.listening;
-    $("#homeIntro").textContent = hasPractice ? "接着上次的练习，把一处问题弄懂，再开始新题。所有记录自动保存在本机。" : "第一次来？从 3 道原创阅读热身题开始。无需题库或 AI，做完就能核对答案。";
+    const heading = $("#homeHeading"), intro = $("#homeIntro");
+    heading.textContent = "从 3 道阅读热身题开始";
+    intro.textContent = "约 3 分钟 · 原创热身 · 无需题库或 AI";
     if (continuation?.pending) {
+      heading.textContent = continuation.title || practiceTitle(continuation);
+      intro.textContent = "上次尚未完成，接着练习。";
       button.textContent = "继续上次练习"; button.title = continuation.title || practiceTitle(continuation); return;
     }
     if (!plan) {
       button.textContent = continuation ? "复盘上次练习" : "开始第一次练习";
+      if (continuation) { heading.textContent = continuation.title || practiceTitle(continuation); intro.textContent = "回到上次的回答，核对一处问题。"; }
       button.title = continuation ? continuation.title || practiceTitle(continuation) : "3 道原创阅读热身题，无需 AI";
       return;
     }
     if (!tasks.length) {
       button.textContent = "查看学习计划";
+      heading.textContent = "今天可以自由练习或复盘";
+      intro.textContent = "没有固定任务，可查看或调整学习计划。";
       button.title = "今天没有固定任务，可查看或调整计划";
       return;
     }
     const nextTask = tasks.find(task => !progress[task.id]);
+    heading.textContent = nextTask ? nextTask.title : "今日任务已完成";
+    intro.textContent = nextTask ? nextTask.detail : "可以回看完成情况，或回顾一条表达。";
     button.textContent = nextTask ? (tasks.some(task => progress[task.id]) ? "继续今日任务" : "开始今日任务") : "查看今日完成情况";
     button.title = nextTask ? `下一项：${nextTask.title}` : "今天的固定任务已经全部完成";
   }
@@ -864,60 +848,92 @@
     }
     if (!plan) return startBeginnerPractice();
     if (!tasks.length) return routeTo("plan");
-    const progress = state.planProgress[today()] || {};
+    const progress = study.progress();
     const nextTask = tasks.find(task => !progress[task.id]);
     if (nextTask) return startTodayTask(nextTask.id);
     $(".today-plan").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function startTodayTask(id) {
-    const task = todayTaskActions.get(id);
+    const task = todayPlanTasks().find(item => item.id === id);
     if (!task) return;
-    try {
-      if (task.kind === "review") {
-        if (await routeTo("mistakes") === false) return;
-        const correction = state.mistakes.find(item => isCorrectionNote(item) && correctionDue(item));
-        if (correction) { mistakeFilter = correction.module; renderMistakes(); startCorrectionStudy(correction.id); }
-        else if (vocabularyWords().some(vocabularyDue)) { mistakeFilter = "vocabulary"; renderMistakes(); startVocabularyStudy(); }
-        else showToast("目前没有到期错题，可以添加一条单词或先完成一次练习");
-        return;
-      }
-      if (task.kind === "language-review") return routeTo("language");
-      if (task.kind === "reading-review" || task.kind === "listening-review") {
-        const skill = task.kind.split("-")[0], version = navigationVersion;
-        const result = await window.ELPLibrary.request("attempts");
-        for (const record of result.attempts.filter(item => item.status === "submitted").sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))) {
-          const pack = await window.ELPLibrary.loadPack(record.packId);
-          if (version !== navigationVersion) return;
-          const unit = record.examId ? pack.exams?.find(item => item.id === record.examId) : pack.units.find(item => item.id === record.unitId);
-          if (unit?.skill === skill) return routeTo(`${skill}/report/${record.id}`);
-        }
-        showToast("还没有可复盘的记录，先完成一道新题"); return routeTo(`${skill}/new`);
-      }
-      if (task.kind === "reading" || task.kind === "listening") return routeTo(`${task.kind}/new`);
-      if (["writing-review", "writing-rewrite", "speaking-review"].includes(task.kind)) {
-        const writing = task.kind.startsWith("writing");
-        const records = (writing ? state.writings : state.speaking).filter(item => writing ? item.essay?.trim() : item.transcript?.trim() || item.audio);
-        const record = records.sort((a, b) => Number(Boolean(b.review)) - Number(Boolean(a.review)) || String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
-        if (record) {
-          if (task.kind === "writing-rewrite") return retryWritingFromReview(record.id);
-          if (record.review) return openReviewWorkspace(writing ? "writing" : "speaking", record.id);
-          if (await routeTo(writing ? "writing" : "speaking") === false) return;
-          return writing ? loadWriting(record.id) : loadSpeaking(record.id);
-        }
-        showToast("先完成一次练习，就能在这里复盘");
-        if (await routeTo(writing ? "writing" : "speaking") === false) return;
-        return writing ? newWriting() : newSpeaking();
-      }
-      if (await routeTo(task.kind) === false) return;
-      if (task.kind === "writing") await newWriting();
-      else if (task.kind === "speaking") await newSpeaking();
-    } catch (error) { showToast(`暂时无法打开任务：${error.message}。请重试。`); }
+    try { await study.start(task, planDayForDate(state.studyPlan, today())); }
+    catch (error) { showToast(`暂时无法开始：${error.message}`); }
+  }
+
+  async function openStudyTask(task) {
+    if (task.kind === "recall") return openReviewItem(task.material);
+    if (task.sourceId) {
+      const record = (task.skill === "writing" ? state.writings : state.speaking).find(item => item.id === task.sourceId);
+      if (!record) return showToast("这条材料已删除，请从今日复习选择其他内容");
+      if (task.kind === "writing-rewrite") return retryWritingFromReview(record.id);
+      if (record.review) return openReviewWorkspace(task.skill, record.id);
+      if (await routeTo(task.skill) === false) return;
+      return task.skill === "writing" ? loadWriting(record.id) : loadSpeaking(record.id);
+    }
+    if (["reading", "listening"].includes(task.skill)) return routeTo(`${task.skill}/new`);
+    if (await routeTo(task.skill) === false) return;
+    if (task.skill === "writing") {
+      if (await newWriting() === false) return;
+      $("#writingType").value = task.writingType || "Task 2"; changeWritingType();
+    } else {
+      if (await newSpeaking() === false) return;
+      $("#speakingPart").value = task.speakingPart || "p1"; updateSpeakingPartGuide();
+    }
+  }
+
+  async function openReviewItem(material) {
+    const item = study.find(material.key);
+    if (!item) return showToast("这条材料已完成、暂停或删除，请选择其他内容");
+    if (item.kind === "objective") return window.ELPObjective.startReview(item.recordId, [item.questionId]);
+    if (item.kind === "language") {
+      if (await routeTo(item.skill) === false) return;
+      const root = $(item.skill === "writing" ? "#dailyWritingLanguage" : "#dailySpeakingLanguage");
+      root.closest(item.skill === "writing" ? ".daily-writing-language" : ".daily-speaking-language").classList.remove("hidden");
+      renderRecallCards(root, [item], item.skill); root.scrollIntoView({ block: "center" }); return;
+    }
+    if (await routeTo("mistakes") === false) return;
+    mistakeFilter = item.kind === "vocabulary" ? "vocabulary" : item.skill;
+    renderMistakes();
+    if (item.kind === "vocabulary") startVocabularyStudy(item.id); else startCorrectionStudy(item.id);
+  }
+
+  function renderReviewQueue() {
+    const root = $("#dailyReviewQueue"); if (!root) return;
+    const items = window.ELPStudy.select(study.queue(), today(), { minutes: 10, limit: 8 });
+    root.replaceChildren();
+    if (!items.length) { root.textContent = "目前没有到期内容，可以开始主要练习。"; return; }
+    for (const item of items) {
+      const row = document.createElement("div"); row.className = "study-queue-row";
+      const label = document.createElement("span"); label.textContent = ({ correction: "错句", vocabulary: "单词", note: "笔记", language: "表达", objective: "错题" })[item.kind];
+      const button = document.createElement("button"); button.type = "button"; button.className = "button button-quiet";
+      button.textContent = item.kind === "language" ? bilingualLanguage(item.text).chinese || "回忆一条表达" : item.title;
+      button.addEventListener("click", () => openReviewItem(item).catch(error => showToast(error.message)));
+      row.append(label, button); root.append(row);
+    }
+  }
+
+  function renderWeeklyStudy() {
+    const root = $("#weeklyStudyEvidence"); if (!root) return;
+    const value = study.summary();
+    const coverage = Object.entries(value.bySkill).map(([key, count]) => `${({writing:"写作",speaking:"口语",reading:"阅读",listening:"听力"})[key]} ${count}`).join(" · ");
+    root.textContent = `近七天新练习 ${coverage}。${value.delayedTotal ? `隔天独立答对 ${value.delayedGood}/${value.delayedTotal} 次。` : "还没有隔天复习结果。"}反复出错 ${value.recurring} 次，确认自然使用表达 ${value.usedLanguage} 次，超出预计时间 ${value.overruns} 次。`;
+    const history = $("#studyHistory"); if (!history) return;
+    const days = new Map();
+    for (const saved of Object.values(state.learning.days)) for (const task of saved.tasks) if (saved.progress[task.id]) {
+      const entries = days.get(saved.date) || []; entries.push(`${task.title}${task.detail ? ` · ${task.detail}` : ""}`); days.set(saved.date, entries);
+    }
+    for (const [date, tasks] of Object.entries(state.planProgress)) {
+      const count = Object.values(tasks).filter(Boolean).length;
+      if (count) days.set(date, [...(days.get(date) || []), `旧计划已完成 ${count} 项`]);
+    }
+    history.innerHTML = [...days].sort(([a],[b]) => b.localeCompare(a)).map(([date, entries]) => `<p><strong>${escapeHtml(date)}</strong><br>${[...new Set(entries)].map(escapeHtml).join("<br>")}</p>`).join("") || "还没有完成记录。修改或删除计划不会清空这里。";
   }
 
   function resetMistakeComposer() {
     $("#mistakeTitle").value = "";
     $("#mistakeText").value = "";
+    $("#mistakeReviewEnabled").checked = false; $("#mistakeCue").value = "";
     pendingMistakeImages = [];
     pendingMistakeRelated = null;
     renderMistakeImagePreview();
@@ -933,6 +949,8 @@
       button.classList.toggle("button-quiet", !active);
       button.setAttribute("aria-pressed", String(active));
     });
+    $("#notebookReviewOption").classList.toggle("hidden", selected === "vocabulary");
+    $("#vocabularyPurpose").classList.toggle("hidden", selected !== "vocabulary");
     if (pendingMistakeRelated && pendingMistakeRelated.module !== selected) pendingMistakeRelated = null;
   }
 
@@ -1014,8 +1032,9 @@
     const text = $("#mistakeText").value.trim();
     if (!title && !text && !pendingMistakeImages.length) return showToast("请先填写内容或粘贴图片");
     const defaultTitle = module === "vocabulary" ? "未命名单词" : `${moduleNames[module]}复盘`;
-    state.mistakes.push({ id: uid(), module, title: title || defaultTitle, text, images: [...pendingMistakeImages], related: pendingMistakeRelated, createdAt: new Date().toISOString() });
-    saveState(true);
+    if (module === "vocabulary" && $('[name="vocabularyMode"]:checked').value === "productive" && !$("#mistakeCue").value.trim()) return showToast("主动说写的单词需要一条中文或语境提示");
+    state.mistakes.push({ reviewEnabled: $("#mistakeReviewEnabled").checked, cue: $("#mistakeCue").value.trim(), vocabularyMode: $('[name="vocabularyMode"]:checked').value, id: uid(), module, title: title || defaultTitle, text, images: [...pendingMistakeImages], related: pendingMistakeRelated, createdAt: new Date().toISOString() });
+    await saveState(true);
     mistakeFilter = module;
     resetMistakeComposer();
     renderMistakes();
@@ -1045,12 +1064,27 @@
       return `<article class="mistake-entry"><header><div><span class="mistake-module">${moduleNames[item.module] || "复盘"}</span><h4>${escapeHtml(item.title || "未命名记录")}</h4><small>${escapeHtml(new Date(item.createdAt).toLocaleString())}</small></div><button class="button button-danger-quiet" data-delete-mistake="${escapeHtml(item.id)}">删除</button></header>${item.text ? `<p>${escapeHtml(item.text)}</p>` : ""}${safeImages.length ? `<div class="mistake-images">${safeImages.map((src, index) => `<img src="${src}" alt="错题图片 ${index + 1}">`).join("")}</div>` : ""}${item.related ? `<div class="button-row"><button class="button button-secondary" data-jump-mistake="${escapeHtml(item.id)}">返回相关练习</button></div>` : ""}</article>`;
     }).join("");
     bindNotebookImageZoom(root);
-    items.forEach((item, index) => { if (isCorrectionNote(item)) renderCorrectionNote(item, root.children[index]); });
-    $$('[data-delete-mistake]', root).forEach(button => button.addEventListener("click", () => {
+    items.forEach((item, index) => {
+      if (isCorrectionNote(item)) return renderCorrectionNote(item, root.children[index]);
+      if (item.module === "vocabulary") return;
+      const actions = document.createElement("div"); actions.className = "note-actions";
+      const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "button button-quiet";
+      toggle.textContent = item.reviewEnabled ? "已加入复习 · 暂停" : "仅保存 · 加入复习";
+      toggle.addEventListener("click", async () => {
+        const previous = item.reviewEnabled; item.reviewEnabled = !previous;
+        try { await saveState(); renderMistakes(); renderReviewQueue(); }
+        catch { item.reviewEnabled = previous; showToast("设置未保存，请重试"); }
+      });
+      actions.append(toggle);
+      if (item.reviewEnabled) {
+        const practice = document.createElement("button"); practice.type = "button"; practice.className = "button button-secondary"; practice.textContent = "回忆这条笔记";
+        practice.addEventListener("click", () => startCorrectionStudy(item.id)); actions.append(practice);
+      }
+      root.children[index].append(actions);
+    });
+    $$('[data-delete-mistake]', root).forEach(button => button.addEventListener("click", async () => {
       if (!confirm("确定删除这条错题/复盘记录吗？")) return;
-      state.mistakes = state.mistakes.filter(item => item.id !== button.dataset.deleteMistake);
-      saveState();
-      renderMistakes();
+      await deleteSavedRecord("mistakes", button.dataset.deleteMistake, null, () => { renderMistakes(); renderReviewQueue(); });
     }));
     $$('[data-jump-mistake]', root).forEach(button => button.addEventListener("click", () => jumpToMistake(button.dataset.jumpMistake)));
     renderNotebookPractice();
@@ -1157,12 +1191,11 @@
   }
 
   function correctionNotes() {
-    return state.mistakes.filter(item => isCorrectionNote(item) && (mistakeFilter === "all" || mistakeFilter === item.module));
+    return state.mistakes.filter(item => (isCorrectionNote(item) || item.reviewEnabled && item.module !== "vocabulary") && (mistakeFilter === "all" || mistakeFilter === item.module));
   }
 
   function correctionDue(item) {
-    const date = item.correctionReview?.dueDate;
-    return typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date <= today();
+    return window.ELPStudy.due(isCorrectionNote(item) ? item.correctionReview : item.noteReview, today());
   }
 
   function renderNotebookPractice() {
@@ -1194,13 +1227,19 @@
     if (!active) return;
     $("#correctionStudyProgress").textContent = `本轮已完成 ${session.completed} 条 · 剩余 ${session.queue.length} 条`;
     $("#correctionStudySource").textContent = `${moduleNames[item.module]} · ${item.sourceTitle || "已收藏的错句"}`;
-    $("#correctionStudyOriginal").textContent = item.correction.original;
+    $("#correctionStudyOriginal").textContent = item.correction?.original || item.cue || item.title;
+    $("#correctionStudyCard h4").textContent = isCorrectionNote(item) ? "原句" : "回忆提示";
+    $("#correctionStudyCard .field > span").textContent = isCorrectionNote(item) ? "你的修改" : "先写下记得的内容";
+    $("[data-correction-rating='good']").textContent = isCorrectionNote(item) ? "独立改对" : "独立想起";
     $("#correctionStudyAttempt").value = session.draft;
     $("#correctionStudyAttempt").readOnly = session.revealed || correctionSaving;
     $("#revealCorrectionAnswer").classList.toggle("hidden", session.revealed);
     $("#correctionStudyAnswer").classList.toggle("hidden", !session.revealed);
-    $("#correctionStudyReference").textContent = session.revealed ? item.correction.corrected : "";
-    $("#correctionStudyReason").textContent = session.revealed ? item.correction.explanation || "这条批改未提供原因。" : "";
+    $("#correctionStudyReference").textContent = session.revealed ? item.correction?.corrected || item.text : "";
+    const referenceImages = $("#correctionStudyReferenceImages"); referenceImages.replaceChildren();
+    if (session.revealed) for (const src of notebookImages(item)) { const image = document.createElement("img"); image.src = src; image.alt = "笔记参考图片"; referenceImages.append(image); }
+    bindNotebookImageZoom(referenceImages);
+    $("#correctionStudyReason").textContent = session.revealed ? item.correction?.explanation || "对照笔记检查自己的回忆。" : "";
     $("#correctionStudyRating").classList.toggle("hidden", !session.revealed);
     $$('[data-correction-rating]').forEach(button => { button.disabled = correctionSaving; });
   }
@@ -1208,9 +1247,9 @@
   function startCorrectionStudy(id) {
     if (correctionSaving) return;
     const notes = correctionNotes();
-    const queue = id ? notes.filter(item => item.id === id) : notes.filter(correctionDue).sort((a, b) => String(a.correctionReview?.dueDate || "9999").localeCompare(String(b.correctionReview?.dueDate || "9999"))).slice(0, 20);
-    if (!queue.length) return;
-    correctionSession = { filter: mistakeFilter, queue: queue.map(item => item.id), completed: 0, draft: "", revealed: false, error: "" };
+    const queue = id ? notes.filter(item => item.id === id && correctionDue(item)) : window.ELPStudy.select(notes.map(item => ({ key: item.id, review: isCorrectionNote(item) ? item.correctionReview : item.noteReview, minutes: 2, item })), today(), { minutes: 10 }).map(value => value.item);
+    if (!queue.length) return showToast("这条内容已安排稍后或隔天复习");
+    correctionSession = { deadline: Date.now() + 10 * 60000, filter: mistakeFilter, queue: queue.map(item => item.id), completed: 0, draft: recallDraftText(queue[0], "correction"), revealed: false, error: "" };
     renderCorrectionStudy();
     $("#correctionStudyAttempt").focus();
   }
@@ -1218,41 +1257,39 @@
   async function rateCorrection(performance) {
     const session = correctionSession;
     if (correctionSaving || !session?.revealed || !["again", "hard", "good"].includes(performance)) return;
-    const item = state.mistakes.find(item => item.id === session.queue[0] && isCorrectionNote(item));
+    const item = state.mistakes.find(item => item.id === session.queue[0] && (isCorrectionNote(item) || item.reviewEnabled));
     if (!item) return renderCorrectionStudy();
     correctionSaving = true;
     session.error = "";
-    const previous = item.correctionReview;
-    const oldLevel = Number.isInteger(previous?.level) ? Math.max(0, Math.min(5, previous.level)) : 0;
-    const level = performance === "good" ? Math.min(5, oldLevel + 1) : 0;
-    const days = performance === "good" ? [1, 3, 7, 14, 30][level - 1] : performance === "hard" ? 1 : 0;
-    const next = new Date(`${today()}T12:00:00`);
-    next.setDate(next.getDate() + days);
-    const dueDate = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
-    item.correctionReview = { level, dueDate, lastReviewedDate: today(), performance, lastAttempt: session.draft, reviewedAt: new Date().toISOString() };
+    const field = isCorrectionNote(item) ? "correctionReview" : "noteReview";
+    const previous = item[field];
+    const previousDraft = item.recallDraft;
+    const previousLearning = persistence.clone(state.learning);
+    item[field] = { ...window.ELPStudy.rate(previous, performance, today()), lastAttempt: session.draft };
+    delete item.recallDraft;
+    study.recalled({ key: `${isCorrectionNote(item) ? "correction" : "note"}:${item.id}`, skill: item.module }, previous, performance);
     renderCorrectionStudy();
     try {
       await saveState(true);
       session.queue.shift();
-      if (performance === "again") session.queue.push(item.id);
-      else session.completed += 1;
-      session.draft = "";
+      session.completed += 1;
+      if (Date.now() >= session.deadline) session.queue = [];
+      session.draft = recallDraftText(state.mistakes.find(item => item.id === session.queue[0]), "correction");
       session.revealed = false;
     } catch {
-      if (previous === undefined) delete item.correctionReview;
-      else item.correctionReview = previous;
+      if (previous === undefined) delete item[field];
+      else item[field] = previous;
+      if (previousDraft) item.recallDraft = previousDraft;
+      state.learning = previousLearning;
       session.error = "复习进度保存失败，当前作答已保留，请检查本地数据服务后重试。";
     } finally {
       correctionSaving = false;
-      renderMistakes();
+      renderMistakes(); renderReviewQueue(); renderTodayPlan(); renderWeeklyStudy();
     }
     if (!session.error && session.queue.length && mistakeFilter === session.filter) $("#correctionStudyAttempt").focus();
   }
 
-  function vocabularyDue(item) {
-    const due = item.vocabularyReview?.dueDate;
-    return typeof due !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(due) || due <= today();
-  }
+  function vocabularyDue(item) { return window.ELPStudy.due(item.vocabularyReview, today()); }
 
   function renderVocabularyStudy() {
     const root = $("#vocabularyStudy");
@@ -1276,17 +1313,21 @@
     $("#stopVocabularyStudy").disabled = vocabularySaving;
     $("#vocabularyStudyCard").classList.toggle("hidden", !active);
     if (!active) {
-      $("#vocabularyStudyStatus").textContent = vocabularySession ? `本轮完成，已记住 ${vocabularySession.completed} 个单词。` : words.length ? "" : "添加单词和释义后即可开始背词。";
+      $("#vocabularyStudyStatus").textContent = vocabularySession ? `本轮已练 ${vocabularySession.completed} 个。需要再练的已安排稍后或隔天复习。` : words.length ? "" : "添加单词和释义后即可开始背词。";
       return;
     }
     $("#vocabularyStudyStatus").textContent = "";
-    $("#vocabularyStudyProgress").textContent = `已记住 ${vocabularySession.completed} 个 · 本轮还剩 ${vocabularySession.queue.length} 个`;
-    $("#vocabularyStudyWord").textContent = item.title;
+    $("#vocabularyStudyProgress").textContent = `已练 ${vocabularySession.completed} 个 · 本轮还剩 ${vocabularySession.queue.length} 个`;
+    const productive = item.vocabularyMode === "productive" && item.cue;
+    $("#vocabularyStudyWord").textContent = productive ? item.cue : item.title;
+    $("#vocabularyStudyAttempt").classList.toggle("hidden", !productive);
+    $("#vocabularyStudyAttempt").value = vocabularySession.draft || "";
+    $("#vocabularyStudyAttempt").readOnly = vocabularySession.revealed;
     const answer = $("#vocabularyStudyAnswer");
     answer.replaceChildren();
     if (typeof item.text === "string" && item.text.trim()) {
       const text = document.createElement("p");
-      text.textContent = item.text;
+      text.textContent = productive ? `${item.title}\n${item.text}` : item.text;
       answer.append(text);
     }
     const images = document.createElement("div");
@@ -1305,15 +1346,11 @@
     $("#vocabularyAgain").disabled = $("#vocabularyKnown").disabled = vocabularySaving;
   }
 
-  function startVocabularyStudy() {
+  function startVocabularyStudy(id) {
     if (vocabularySaving) return;
-    const words = vocabularyWords().filter(vocabularyDue).sort((a, b) => {
-      const aDue = a.vocabularyReview?.dueDate || "9999";
-      const bDue = b.vocabularyReview?.dueDate || "9999";
-      return String(aDue).localeCompare(String(bDue));
-    }).slice(0, 20);
-    if (!words.length) return;
-    vocabularySession = { queue: words.map(item => item.id), completed: 0, revealed: false };
+    const words = window.ELPStudy.select(vocabularyWords().filter(item => !id || item.id === id).map(item => ({ key: item.id, item, review: item.vocabularyReview, minutes: 1 })), today(), { minutes: 10 }).map(value => value.item);
+    if (!words.length) return showToast("目前没有到期单词");
+    vocabularySession = { queue: words.map(item => item.id), completed: 0, revealed: false, draft: recallDraftText(words[0], "vocabulary"), deadline: Date.now() + 10 * 60000 };
     renderVocabularyStudy();
     $("#revealVocabularyAnswer").focus();
   }
@@ -1323,25 +1360,26 @@
     const session = vocabularySession;
     const item = vocabularyWords().find(word => word.id === session.queue[0]);
     if (!item) return renderVocabularyStudy();
+    if (known && item.vocabularyMode === "productive" && !session.draft.trim()) { $("#vocabularyStudyStatus").textContent = "先尝试写出英文；暂时不会可以选择再练一次"; return; }
     vocabularySaving = true;
     const previous = item.vocabularyReview;
-    const intervals = [1, 3, 7, 14, 30];
-    const oldLevel = Number.isInteger(previous?.level) ? Math.max(0, Math.min(5, previous.level)) : 0;
-    const level = known ? Math.min(5, oldLevel + 1) : 0;
-    const next = new Date(`${today()}T12:00:00`);
-    next.setDate(next.getDate() + (known ? intervals[level - 1] : 0));
-    const dueDate = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
-    item.vocabularyReview = { level, dueDate, lastReviewedDate: today() };
+    const previousDraft = item.recallDraft;
+    const previousLearning = persistence.clone(state.learning);
+    item.vocabularyReview = { ...window.ELPStudy.rate(previous, known ? "good" : "again", today()), lastAttempt: session.draft };
+    delete item.recallDraft;
+    study.recalled({ key: `vocabulary:${item.id}`, skill: "vocabulary" }, previous, known ? "good" : "again");
     renderVocabularyStudy();
     try {
       await saveState(true);
       session.queue.shift();
-      if (known) session.completed += 1;
-      else session.queue.push(item.id);
+      session.completed += 1; session.draft = recallDraftText(state.mistakes.find(item => item.id === session.queue[0]), "vocabulary");
+      if (Date.now() >= session.deadline) session.queue = [];
       session.revealed = false;
     } catch {
       if (previous === undefined) delete item.vocabularyReview;
       else item.vocabularyReview = previous;
+      if (previousDraft) item.recallDraft = previousDraft;
+      state.learning = previousLearning;
       vocabularySaving = false;
       renderVocabularyStudy();
       $("#vocabularyStudyStatus").textContent = "复习进度保存失败，请检查本地数据服务后重试；当前单词已保留。";
@@ -1349,6 +1387,7 @@
     }
     vocabularySaving = false;
     renderVocabularyStudy();
+    renderReviewQueue(); renderTodayPlan(); renderWeeklyStudy();
     if (session.queue.length) $("#revealVocabularyAnswer").focus();
   }
 
@@ -1384,7 +1423,8 @@
     }
     const card = item => {
       const status = item.review ? "已批改" : item.status === "completed" ? "已完成" : "写作中";
-      return `<div class="record-list-item"><button class="library-item ${item.id === activeWritingId ? "is-active" : ""}" data-writing-id="${escapeHtml(item.id)}"><span class="record-title-row"><strong>${escapeHtml(practiceTitle(item))}</strong><em class="record-status ${item.review ? "is-reviewed" : ""}">${status}</em></span><small>${escapeHtml(item.type)} · 第 ${writingAttempt(item)} 次</small><small>${escapeHtml(String(item.updatedAt || "").slice(0, 10))} · ${countWords(item.essay)} words${item.promptImages?.length ? ` · ${item.promptImages.length} 图` : ""}</small></button><button class="record-delete" data-delete-writing-id="${escapeHtml(item.id)}" aria-label="删除这篇写作">删除</button></div>`;
+      const meta = `${item.type} · 第 ${writingAttempt(item)} 次 · ${countWords(item.essay)} words${item.promptImages?.length ? ` · ${item.promptImages.length} 图` : ""}`;
+      return `<div class="record-list-item"><button class="library-item ${item.id === activeWritingId ? "is-active" : ""}" data-writing-id="${escapeHtml(item.id)}" title="${escapeHtml(meta)}"><span class="record-title-row"><strong>${escapeHtml(practiceTitle(item))}</strong></span><span class="record-meta"><em class="record-status ${item.review ? "is-reviewed" : ""}">${status}</em><small>${escapeHtml(String(item.updatedAt || "").slice(0, 10))}</small><small>${escapeHtml(item.type === "Task 1 General" ? "G 类" : item.type === "Task 1 Academic" ? "A 类" : "")}</small></span></button><button class="record-delete" data-delete-writing-id="${escapeHtml(item.id)}" aria-label="删除这篇写作">删除</button></div>`;
     };
     const groupMarkup = (key, items) => `<section class="history-group"><div class="history-group-heading"><span>${labels[key]}</span><b>${items.length}</b></div>${items.map(card).join("")}</section>`;
     root.className = "library-list grouped-history";
@@ -1411,12 +1451,31 @@
     $("#writingSessionView").classList.toggle("hidden", writingScreenMode !== "session");
     if (writingScreenMode === "session") renderWritingSession();
     else setPracticeFocus(false);
+    syncPageActions();
   }
 
   function setSpeakingScreen(mode) {
     speakingScreenMode = mode === "practice" ? "practice" : "overview";
     $("#speakingOverviewView").classList.toggle("hidden", speakingScreenMode !== "overview");
     $("#speakingPracticeView").classList.toggle("hidden", speakingScreenMode !== "practice");
+    syncPageActions();
+  }
+
+  function recallDraftText(item, kind) {
+    return item?.recallDraft?.kind === kind && typeof item.recallDraft.text === "string" ? item.recallDraft.text : "";
+  }
+
+  function saveRecallDraft(session, kind, text) {
+    const item = state.mistakes.find(item => item.id === session.queue[0]);
+    if (!item) return;
+    session.draft = text;
+    item.recallDraft = {kind, text};
+    recallDrafts.mark();
+  }
+
+  function syncPageActions() {
+    const overview = appliedRoute === "writing" ? writingScreenMode === "overview" : appliedRoute === "speaking" ? speakingScreenMode === "overview" : true;
+    $$('[data-page-actions]').forEach(group => group.classList.toggle("hidden", group.dataset.pageActions !== appliedRoute || !overview));
   }
 
   function syncWritingTaskOptions() {
@@ -1481,12 +1540,24 @@
     question.innerHTML = `${item.prompt ? `<div class="writing-question-text">${escapeHtml(item.prompt)}</div>` : ""}${(item.promptImages || []).map((src, index) => `<img src="${escapeHtml(src)}" alt="题目图片 ${index + 1}">`).join("")}` || '<p class="empty-state">本题只有空白题目</p>';
   }
 
-  function deleteWritingRecord(id) {
+  const persistRemoval = window.ELPStorage.createRemoval({save:()=>saveState(),onError:message=>showToast(message)});
+
+  async function deleteSavedRecord(collection, id, draft, after) {
+    let index, record;
+    return persistRemoval({
+      draft, prepare: async () => !draft || await draft.flush(),
+      remove() { index = state[collection].findIndex(item => item.id === id); record = state[collection][index]; state[collection] = state[collection].filter(item => item.id !== id); },
+      restore() { if (record && !state[collection].some(item => item.id === id)) state[collection].splice(index, 0, record); },
+      after
+    });
+  }
+
+  async function deleteWritingRecord(id) {
     if (!id || !confirm("确定删除这篇写作记录吗？")) return;
-    state.writings = state.writings.filter(entry => entry.id !== id);
-    saveState();
-    if (activeWritingId === id) newWriting(true); else renderWritingHistory();
-    showToast("写作记录已删除");
+    return deleteSavedRecord("writings", id, writingDraft, async () => {
+      if (activeWritingId === id) await newWriting(true); else renderWritingHistory();
+      showToast("写作记录已删除");
+    });
   }
 
   function countWords(value) {
@@ -1586,7 +1657,7 @@
     $("#saveStatus").textContent = `上次自动保存 ${new Date(item.updatedAt).toLocaleString()}`;
     $("#writingReview").textContent = "";
     $("#writingReview").classList.add("hidden");
-    resetWritingTimer();
+    restoreWritingTimer(item);
     updateWordCount(false);
     syncWritingTaskOptions();
     setWritingScreen("session");
@@ -1622,6 +1693,8 @@
       ,rootSessionId: existing?.rootSessionId || existing?.id || activeWritingId || ""
       ,parentSessionId: existing?.parentSessionId || null
       ,attemptNumber: existing?.attemptNumber || 1
+      ,elapsedSeconds: writingClock.seconds
+      ,timerState: { ...writingClock.snapshot(), paused: writingTimerPaused }
     };
     const index = state.writings.findIndex(entry => entry.id === record.id);
     if (index >= 0) state.writings[index] = record; else state.writings.push(record);
@@ -1675,33 +1748,64 @@
     $("#toggleTimer").textContent = countUp ? "开始正计时" : "开始倒计时";
   }
 
-  function toggleWritingTimer() {
+  function restoreWritingTimer(item) {
+    resetWritingTimer();
+    if (item.timerState) writingClock.restore(item.timerState);
+    else if (item.elapsedSeconds == null && item.status === "running" && Number.isFinite(Date.parse(item.startedAt))) writingClock.restore({elapsedMilliseconds:0,anchor:Date.parse(item.startedAt)});
+    else writingClock.reset(Math.max(0, Number(item.elapsedSeconds) || 0));
+    writingTimerPaused = Boolean(item.timerState?.paused || (!item.timerState && writingClock.seconds > 0 && !writingClock.running));
     const countUp = !Number($("#writingMinutes").value);
-    if (timerInterval) {
+    timerSeconds = countUp ? writingClock.seconds : Math.max(0, Number($("#writingMinutes").value) * 60 - writingClock.seconds);
+    if (item.status === "completed") writingClock.pause();
+    else if (!countUp && !timerSeconds) { writingClock.reset(Number($("#writingMinutes").value) * 60); writingTimerPaused = true; }
+    $("#writingTimer").textContent = formatClock(timerSeconds);
+    $("#writingTimer").title = "运行中的计时包含离开页面的时间；暂停后不再计时";
+    $("#toggleTimer").textContent = writingClock.running ? "暂停计时" : writingTimerPaused ? "继续计时" : countUp ? "开始正计时" : "开始倒计时";
+    if (writingClock.running) armWritingTimer();
+  }
+
+  function armWritingTimer() {
+    clearInterval(timerInterval);
+    const countUp = !Number($("#writingMinutes").value);
+    timerInterval = setInterval(() => {
+      timerSeconds = countUp ? writingClock.seconds : Math.max(0, Number($("#writingMinutes").value) * 60 - writingClock.seconds);
+      $("#writingTimer").textContent = formatClock(timerSeconds);
+      if (!countUp && timerSeconds <= 0) {
+        writingClock.reset(Number($("#writingMinutes").value) * 60);
+        clearInterval(timerInterval); timerInterval = null;
+        writingTimerPaused = true;
+        $("#toggleTimer").textContent = "继续计时";
+        renderWritingSession();
+        void saveWriting({silent:true});
+        showToast("计时结束，答案已暂停编辑，可完成本次练习");
+      }
+    }, 1000);
+  }
+
+  async function toggleWritingTimer() {
+    const countUp = !Number($("#writingMinutes").value);
+    if (writingClock.running) {
       writingClock.pause();
       clearInterval(timerInterval);
       timerInterval = null;
       $("#toggleTimer").textContent = countUp ? "继续正计时" : "继续倒计时";
       writingTimerPaused = true;
       renderWritingSession();
-      return;
+      return saveWriting({silent:true});
     }
-    if (!countUp && timerSeconds <= 0) resetWritingTimer();
+    if (!countUp && timerSeconds <= 0) return showToast("本次计时已结束，请完成练习；重写会建立新记录");
     writingTimerPaused = false;
     renderWritingSession();
     setPracticeFocus(true);
     $("#toggleTimer").textContent = "暂停计时";
     writingClock.start();
-    timerInterval = setInterval(() => {
-      timerSeconds = countUp ? writingClock.seconds : Math.max(0, Number($("#writingMinutes").value) * 60 - writingClock.seconds);
-      $("#writingTimer").textContent = formatClock(timerSeconds);
-      if (!countUp && timerSeconds <= 0) {
-        clearInterval(timerInterval);
-        timerInterval = null;
-        $("#toggleTimer").textContent = "重新倒计时";
-        showToast("计时结束，记得保存并复盘");
-      }
-    }, 1000);
+    if (!await saveWriting({silent:true})) {
+      writingClock.pause(); writingTimerPaused = true;
+      const record = state.writings.find(item => item.id === activeWritingId);
+      if (record) { record.timerState = { ...writingClock.snapshot(), paused: true }; record.elapsedSeconds = writingClock.seconds; }
+      $("#toggleTimer").textContent = "继续计时"; renderWritingSession(); return false;
+    }
+    if (writingClock.running) armWritingTimer();
   }
 
   async function startWritingSession() {
@@ -1717,7 +1821,7 @@
     await saveState(true);
     setWritingScreen("session");
     resetWritingTimer();
-    toggleWritingTimer();
+    await toggleWritingTimer();
     setTimeout(() => $("#writingEssay").focus(), 80);
   }
 
@@ -1739,12 +1843,14 @@
     if (!item) return;
     item.status = "completed";
     item.finishedAt = new Date().toISOString();
+    item.completedAt = item.finishedAt;
     item.elapsedSeconds = writingClock.seconds;
+    if (item.essay?.trim()) { if (state.studyPlan) study.snapshot(planDayForDate(state.studyPlan, today())); study.completed("writing", item, item.elapsedSeconds / 60); }
     await saveState(true);
     writingCompletedEditing = false;
     setPracticeFocus(false);
     renderWritingSession();
-    renderWritingHistory();
+    renderWritingHistory(); renderTodayPlan(); renderWeeklyStudy(); renderPracticeLanguage();
     showToast("本次写作已完成并自动保存；需要时可提交 AI 批改");
   }
 
@@ -1801,7 +1907,7 @@
     await loadWriting(record.id);
     routeTo("writing");
     resetWritingTimer();
-    toggleWritingTimer();
+    await toggleWritingTimer();
     setTimeout(() => $("#writingEssay").focus(), 80);
   }
 
@@ -1902,20 +2008,11 @@
         {role:"user",content:[{type:"text",text:`题型：${item.type}\n题目：${item.prompt}`},...images.map(url=>({type:"image_url",image_url:{url,detail:"auto"}}))]}
       ];
       let parsed, model;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const response = await window.ELPAI.send({messages,temperature:0,max_tokens:6000});
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "提取失败");
-        try {
-          parsed = JSON.parse(String(data.content || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
-          if (typeof parsed.description !== "string" || !parsed.description.trim() || typeof parsed.uncertainties !== "string" || parsed.description.length + parsed.uncertainties.length > 23000) throw new Error("invalid");
-          model = data.model; break;
-        } catch {
-          parsed = null;
-          if (attempt) throw new Error("图片模型未返回可核对的信息，原有内容已保留");
-          messages.push({role:"system",content:"请严格返回 description 和 uncertainties 两个字符串字段的 JSON，不要代码块或其他文字。"});
-        }
-      }
+      await window.ELPAI.validated({messages,temperature:0,max_tokens:6000}, data => {
+        parsed = JSON.parse(String(data.content || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
+        if (typeof parsed.description !== "string" || !parsed.description.trim() || typeof parsed.uncertainties !== "string" || parsed.description.length + parsed.uncertainties.length > 23000) throw new Error("图片模型未返回可核对的信息，原有内容已保留");
+        model = data.model;
+      });
       const current = state.writings.find(entry => entry.id === recordId);
       if (!current || chartSourceKey(current) !== sourceKey) throw new Error("题目已改变，请重新提取");
       const previous = current.chartExtraction;
@@ -1959,18 +2056,14 @@
       { role: "system", content: `你是一名严谨、克制的 IELTS 写作教练。用户消息包含现有水平、目标水平和明确的 Task 类型。必须只使用该题型对应的评分标准，不能把 Task 1 Academic、Task 1 General Training 和 Task 2 混为一谈。先按当前能力选择最易掌握、最有收益的修改，再按目标水平生成可模仿的答案。优先参考本模块单项水平；只有总分时不要自行推定单项分数。现有水平只是学习背景，原稿评分必须独立依据实际文本，不得因目标分抬分。缺少关键信息时说明不确定性，不虚构官方成绩。评分与小分放在最前面，随后给简明总体评价。\n\n${IELTS_WRITING_SCORING_GUIDE}\n\n纠错边界必须严格遵守：只有客观、明确、在当前语境下无合理争议的语法、拼写、词形、主谓一致、时态、冠词、单复数、介词或句法错误，才放入“确定语法错误”，并使用原文｜修改｜类型｜原因四列表格；修改必须尽量小。措辞更自然、词汇更高级、表达更简洁、段落更流畅、论证更充分等都只是可选优化，只能放在“原文优化建议（可选优化建议）”，不得标红原文或写入纠错表。正确但不够漂亮的句子绝不能判错；证据不足时宁可不改；没有确定错误就明确写没有。范文保留原意并贴近目标水平，不堆砌生词；最后只保留真正值得主动记忆的领域搭配和常用句式。不要照搬私人模板或课程资料。` },
       { role: "system", content: `本次题型的专用要求：${writingTaskAssessment(writingType)}` },
       { role: "user", content: `${learnerContext}\n\n写作类型：${writingType}\n界面统计英文词数：${wordCount}${imageNotice}\n题目：${prompt || "未提供文字题目"}\n\n我的正文：\n${essay}` }
-    ], $("#writingReview"), async content => {
+    ], $("#writingReview"), async (content, report) => {
       const record = state.writings.find(entry => entry.id === recordId);
       if (!record) return;
-      record.review = content;
-      record.reviewInput = reviewInput;
-      record.topicTitle = reviewTopicTitle(content) || practiceTitle({ prompt });
-      record.reviewedAt = new Date().toISOString();
-      await saveState();
+      await window.ELPAI.commitReview({record,content,report,snapshot:reviewInput,title:reviewTopicTitle(content) || practiceTitle({prompt}),save:()=>saveState()});
       renderWritingHistory();
       refreshReviewWorkspace("writing", recordId);
       if (activeWritingId === recordId && location.hash === "#writing") openReviewWorkspace("writing", recordId);
-    }, () => activeWritingId === recordId, [], "writing");
+    }, () => activeWritingId === recordId, [], "writing", writingType);
   }
 
   function reviewSpeaking() { return aiTasks.run(() => reviewSpeakingTask()); }
@@ -1992,21 +2085,14 @@
       { role: "system", content: `本次题型的专用要求：${speakingPartAssessment(part, duration)}` },
       { role: "system", content: "页面展示要求：不要寒暄。增加独立三级标题‘转写整理稿’，其正文只放补充基础标点、大小写和分段后的转写，不得增删替换原始转写中的词语，不得修复语法或猜测识别错误。逐句修改仍单独列出，原片段逐字引用用户的原始转写，页面会将修改定位到整理稿。不要在其他章节重复整理稿。" },
       { role: "user", content: `${learnerContext}\n\nIELTS 口语题型：${partConfig.label}（${partConfig.title}）\n本次录音时长：${duration > 0 ? `${duration} 秒` : "未记录"}\n该 Part 的界面练习说明：${partConfig.guide}\n完整题目 / 题卡：\n${prompt || "未提供具体题目，仅作自由表达"}\n\n本地 Whisper 转写文字稿：\n${transcript}` }
-    ], $("#speakingReview"), async content => {
+    ], $("#speakingReview"), async (content, report) => {
       const record = state.speaking.find(entry => entry.id === recordId);
       if (!record) return;
-      record.review = content;
-      record.reviewInput = reviewInput;
-      record.topicTitle = reviewTopicTitle(content) || practiceTitle({ prompt });
-      record.reviewedAt = new Date().toISOString();
-      await saveState();
-      renderSpeakingHistory();
       const revised = window.extractTranscriptPunctuation?.(content);
-      if (revised && window.isPunctuationOnlyRevision?.(transcript, revised)) {
-        record.punctuatedTranscript = revised;
-        record.punctuationSource = transcript;
-        await saveState();
-      }
+      const punctuation = revised && window.isPunctuationOnlyRevision?.(transcript,revised) ? revised : "";
+      await window.ELPAI.commitReview({record,content,report,snapshot:reviewInput,title:reviewTopicTitle(content) || practiceTitle({prompt}),save:()=>saveState(),punctuation});
+      renderSpeakingHistory();
+
       refreshReviewWorkspace("speaking", recordId);
       if (activeSpeakingId === recordId && location.hash === "#speaking") openReviewWorkspace("speaking", recordId);
     }, () => activeSpeakingId === recordId, [], "speaking");
@@ -2032,13 +2118,20 @@
     $("#speakingTranscript").disabled = true;
     renderSpeakingStage();
     $("#recordHint").textContent = "Whisper 正在本机处理录音……长录音可能需要几分钟，可取消；录音不会上传。";
+    let audioSaved = false, transcriptionStatus = "failed";
     try {
+      // Commit captured audio before a potentially minutes-long transcription.
+      audioSaved = await saveSpeaking({ silent: true, captureCommit: true, transcriptionStatus: "pending" });
+      if (!audioSaved) throw new Error("录音尚未写入磁盘，请保留页面，重试保存或下载录音");
+      if (session !== recordingSession) return;
       const text = await window.localWhisper.transcribe(blob,controller.signal);
       if (session !== recordingSession) return;
       $("#speakingTranscript").value = text;
+      transcriptionStatus = "completed";
       $("#recordHint").textContent = "本地转写完成并自动保存。请回听核对；手动修改也会继续自动保存。";
     } catch (error) {
-      if (session === recordingSession) $("#recordHint").textContent = error.name === "AbortError" ? "已取消转写，录音和已有文字会自动保留，也可重新转写。" : `本地转写失败：${error.message}。录音会自动保留，可重新转写。`;
+      transcriptionStatus = error.name === "AbortError" ? "cancelled" : "failed";
+      if (session === recordingSession) $("#recordHint").textContent = !audioSaved ? error.message : error.name === "AbortError" ? "已取消转写，录音已保存，可重新转写。" : `本地转写失败：${error.message}。录音已保存，可重新转写。`;
     } finally {
       if (session === recordingSession) {
         recordingBusy = false; localTranscriptionController = null;
@@ -2047,7 +2140,7 @@
         $("#cancelLocalTranscription").classList.add("hidden");
       }
     }
-    if (session === recordingSession && recordingBlob) await saveSpeaking({ silent: true });
+    if (audioSaved && session === recordingSession && recordingBlob) await saveSpeaking({ silent: true, transcriptionStatus });
     renderSpeakingStage();
   }
 
@@ -2164,9 +2257,11 @@
     if (session !== recordingSession) return;
     await transcribeLocalRecording(session);
     if (session === recordingSession) {
+      const resultHint = $("#recordHint").textContent;
       speakingPhase = "idle";
       $("#speakingPart").disabled = false;
       updateSpeakingPartGuide();
+      $("#recordHint").textContent = resultHint;
     }
   }
 
@@ -2188,7 +2283,7 @@
       root.textContent = "这个分类还没有口语记录";
       return;
     }
-    const card = item => `<div class="record-list-item"><button class="library-item ${item.id === activeSpeakingId ? "is-active" : ""}" data-speaking-id="${escapeHtml(item.id)}"><span class="record-title-row"><strong>${escapeHtml(item.prompt || "自由表达")}</strong>${item.review ? '<em class="record-status is-reviewed">已批改</em>' : ""}</span><small>${labels[groupKey(item)]}</small><small>${escapeHtml(String(item.updatedAt || item.createdAt || "").slice(0, 10))} · ${Number(item.duration || 0)} 秒${item.transcript ? ` · ${countWords(item.transcript)} words` : ""}</small></button><button class="record-delete" data-delete-speaking-id="${escapeHtml(item.id)}" aria-label="删除这条口语记录">删除</button></div>`;
+    const card = item => `<div class="record-list-item"><button class="library-item ${item.id === activeSpeakingId ? "is-active" : ""}" data-speaking-id="${escapeHtml(item.id)}" title="${labels[groupKey(item)]} · ${Number(item.duration || 0)} 秒 · ${countWords(item.transcript)} words"><span class="record-title-row"><strong>${escapeHtml(item.prompt || "自由表达")}</strong></span><span class="record-meta">${item.review ? '<em class="record-status is-reviewed">已批改</em>' : ""}<small>${escapeHtml(String(item.updatedAt || item.createdAt || "").slice(0, 10))}</small><small>${Number(item.duration || 0)} 秒</small></span></button><button class="record-delete" data-delete-speaking-id="${escapeHtml(item.id)}" aria-label="删除这条口语记录">删除</button></div>`;
     const groupMarkup = (key, items) => `<section class="history-group"><div class="history-group-heading"><span>${labels[key]}</span><b>${items.length}</b></div>${items.map(card).join("")}</section>`;
     root.className = "library-list grouped-history";
     root.innerHTML = speakingHistoryFilter === "all"
@@ -2305,12 +2400,13 @@
     refreshPracticeTextareas();
   }
 
-  function deleteSpeakingRecord(id) {
+  async function deleteSpeakingRecord(id) {
     if (!id || !confirm("确定删除这条口语练习及其内嵌录音吗？另行下载的副本和历史备份不受影响。")) return;
-    state.speaking = state.speaking.filter(entry => entry.id !== id);
-    saveState();
-    if (activeSpeakingId === id) newSpeaking(true); else renderSpeakingHistory();
-    showToast("口语记录已删除");
+    if (recordingBusy || recorder?.state === "recording" || speakingPhase === "preparing") return showToast("先结束录音或转写，再删除记录");
+    return deleteSavedRecord("speaking", id, speakingDraft, async () => {
+      if (activeSpeakingId === id) await newSpeaking(true); else renderSpeakingHistory();
+      showToast("口语记录已删除");
+    });
   }
 
   function audioBlobToDataUrl(blob) {
@@ -2322,8 +2418,8 @@
     });
   }
 
-  async function persistSpeaking({ silent = false } = {}) {
-    if (recordingBusy || recorder?.state === "recording") return false;
+  async function persistSpeaking({ silent = false, captureCommit = false, transcriptionStatus } = {}) {
+    if ((recordingBusy && !captureCommit) || recorder?.state === "recording") return false;
     const session = recordingSession;
     const prompt = $("#speakingPrompt").value.trim();
     const transcript = $("#speakingTranscript").value.trim();
@@ -2335,6 +2431,7 @@
       if (session !== recordingSession) return false;
       const record = { ...existing, id: activeSpeakingId || uid(), part: $("#speakingPart").value, prompt, transcript, audio, duration: recordSeconds, createdAt: existing?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(), review: existing?.review || "", reviewInput: existing?.reviewInput || null, topicTitle: existing?.topicTitle || reviewTopicTitle(existing?.review), reviewedAt: existing?.reviewedAt || "", attemptNumber: existing?.attemptNumber || 1 };
       record.rootSessionId ||= record.id;
+      if (transcriptionStatus) record.transcriptionStatus = transcriptionStatus;
       record.practiceLanguage = practiceLanguage.speaking;
       record.punctuatedTranscript = existing?.punctuatedTranscript || "";
       record.questionRef = speakingQuestionRef;
@@ -2342,11 +2439,16 @@
       const index = state.speaking.findIndex(entry => entry.id === record.id);
       if (index >= 0) state.speaking[index] = record; else state.speaking.push(record);
       activeSpeakingId = record.id;
+      if (audio && transcript && !record.completedAt) {
+        record.status = "completed"; record.completedAt = new Date().toISOString();
+        if (state.studyPlan) study.snapshot(planDayForDate(state.studyPlan, today()));
+        study.completed("speaking", record, record.duration / 60);
+      }
       await saveState(true);
       recordingBlobDirty = false;
       $("#deleteSpeaking").classList.remove("hidden");
       $("#speakingSaveStatus").textContent = `已自动保存 ${new Date().toLocaleTimeString()}`;
-      renderSpeakingHistory();
+      renderSpeakingHistory(); renderPracticeLanguage(); renderTodayPlan(); renderWeeklyStudy();
       if (!silent) showToast(audio ? "录音与文字稿已一起永久保存到本地" : "文字稿已永久保存到本地");
       return true;
     } catch (error) {
@@ -2390,7 +2492,7 @@
     if (aiTasks.busy) throw new Error("请等待 AI 任务保存完成，再更换或恢复档案");
     if (window.ELPLibrary?.busy) throw new Error("请等待题库导入完成，再备份或恢复");
     await Promise.all([pendingWritingPromptImageJob, pendingMistakeImageJob]);
-    const results = await Promise.all([flushWritingAutosave(), flushSpeakingAutosave(), flushLanguagePractice(), window.ELPObjective?.flush()]);
+    const results = await Promise.all([flushWritingAutosave(), flushSpeakingAutosave(), recallDrafts.flush(), flushLanguagePractice(), window.ELPObjective?.flush()]);
     if (results.some(result => result === false)) throw new Error("当前练习未能保存，请保留页面并重试");
     if (diskStatus?.bound) await saveState();
   }
@@ -2429,6 +2531,27 @@
     await newWriting(true); await newSpeaking(true);
     renderAll(); populatePlanForm(); populatePreferences();
     setWritingScreen("overview"); setSpeakingScreen("overview");
+  }
+
+  async function recoverStudyRecords() {
+    const output = $("#backupStatus");
+    try {
+      if (persistence.dirty) throw new Error("本页还有未保存修改，请先保存或复制草稿，再重新打开页面进行抢救");
+      const status = await (await fetch("/api/data/status")).json();
+      const headers = {"X-ELP-Directory":status.directoryId || "", "Content-Type":"application/json"};
+      const response = await fetch("/api/data/recovery", {headers});
+      const preview = await response.json();
+      if (!response.ok) throw new Error(preview.error);
+      const description = `可恢复写作 ${preview.counts.writings} 条、口语 ${preview.counts.speaking} 条、笔记 ${preview.counts.mistakes} 条。\n${preview.issues.join("\n") || "未发现损坏记录。"}\n\n恢复前会保留原件和抢救报告。确认恢复这些记录？`;
+      output.textContent = description;
+      if (!confirm(description)) return;
+      const restored = await fetch("/api/data/recovery", {method:"POST",headers,body:JSON.stringify({token:preview.token})});
+      const result = await restored.json();
+      if (!restored.ok) throw new Error(result.error);
+      state = persistence.adopt(normalizeState(result.data),result);
+      updateDiskStatus(result.storage); renderAll();
+      output.textContent = "健康记录已恢复。原件和抢救报告保留在数据目录中。";
+    } catch (error) { output.textContent = `抢救未完成：${error.message}`; }
   }
 
   async function restoreFullBackup(file) {
@@ -2771,12 +2894,13 @@
     }));
   }
 
-  const WRITING_DOMAIN_ORDER = ["教育", "科技", "犯罪与法律", "商业与经济", "环境", "健康", "社会与公共政策", "交通与城市", "文化与媒体", "通用表达"];
-  const WRITING_MEMORY_LIMITS = { collocations: 5, sentencePatterns: 3 };
+  const WRITING_DOMAIN_ORDER = ["Task 1 学术图表", "Task 1 书信", "教育", "科技", "犯罪与法律", "商业与经济", "环境", "健康", "社会与公共政策", "交通与城市", "文化与媒体", "通用表达"];
 
   function writingDomainCategory(value) {
     const original = languageText(value) || "其他领域";
     const key = original.toLocaleLowerCase();
+    if (/task\s*1.*(?:general|书信)|书信|letter/i.test(key)) return "Task 1 书信";
+    if (/task\s*1|图表|趋势|数据比较|流程图|地图/i.test(key)) return "Task 1 学术图表";
     const groups = [
       ["通用表达", /通用|衔接|连接|逻辑|cohesion|connector|general|universal|linking/],
       ["教育", /教育|学校|大学|学生|教师|education|school|university|student|teacher/],
@@ -2848,14 +2972,14 @@
   function languageBankSource() {
     const newest = items => [...items].sort((a, b) => String(b.reviewedAt || b.updatedAt || "").localeCompare(String(a.reviewedAt || a.updatedAt || "")));
     const fullText = value => String(value || "").trim();
-    const speaking = newest(state.speaking).map(item => {
+    const speaking = newest(state.speaking).filter(item => item.transcript?.trim() && (item.status === "completed" || item.review || item.languageConfirmed)).map(item => {
       const content = { part: SPEAKING_PARTS[item.part]?.label || item.part || "自由表达", question: fullText(item.prompt), answer: fullText(item.reviewInput?.original || item.transcript), feedback: fullText(item.review) };
       return { recordId: item.id, sourceKey: languageSourceFingerprint(item.id, content), legacySourceKey: `${item.id}:${item.updatedAt || ""}:${item.reviewedAt || ""}`, ...content };
-    }).filter(item => item.question || item.answer);
-    const writing = newest(state.writings).map(item => {
+    }).filter(item => item.answer);
+    const writing = newest(state.writings).filter(item => item.essay?.trim() && (item.status === "completed" || item.review || item.languageConfirmed)).map(item => {
       const content = { type: fullText(item.type), question: fullText(item.prompt), answer: fullText(item.reviewInput?.original || item.essay), feedback: fullText(item.review) };
       return { recordId: item.id, sourceKey: languageSourceFingerprint(item.id, content), legacySourceKey: `${item.id}:${item.updatedAt || ""}:${item.reviewedAt || ""}`, ...content };
-    }).filter(item => item.question || item.answer);
+    }).filter(item => item.answer);
     return { speaking, writing };
   }
 
@@ -2863,7 +2987,7 @@
     const source = languageBankSource()[kind] || [];
     const savedKeys = new Set(languageList(item?.sourceKeys));
     if (savedKeys.size) {
-      const exact = source.filter(record => savedKeys.has(record.sourceKey) || savedKeys.has(record.legacySourceKey));
+      const exact = source.filter(record => savedKeys.has(record.sourceKey) || savedKeys.has(record.legacySourceKey) || [...savedKeys].some(key => key.startsWith(`${record.recordId}:content:`)));
       if (exact.length) return exact;
     }
     if (kind === "speaking") {
@@ -2954,7 +3078,7 @@
       const title = languageBankTab === "speaking" ? item.title : item.domain;
       const meta = languageBankTab === "speaking"
         ? `${item.reusableTopics.length} 个迁移话题 · ${item.expressions.length} 条表达`
-        : `${item.collocations.length} 条搭配 · ${item.sentencePatterns.length} 个句式（每日少量轮换）`;
+        : `${item.collocations.length} 条搭配 · ${item.sentencePatterns.length} 个句式（按表现复习）`;
       return `<div class="language-menu-row"><button class="language-menu-card ${index === selected ? "is-active" : ""}" type="button" data-language-index="${index}" aria-pressed="${index === selected}"><span>${escapeHtml(title)}</span><small>${escapeHtml(meta)}</small></button><button class="language-card-delete" type="button" data-language-delete="${index}" aria-label="删除${escapeHtml(title)}语料">删除</button></div>`;
     }).join("");
     $$('[data-language-index]', menu).forEach(button => button.addEventListener("click", () => {
@@ -2966,29 +3090,35 @@
     }));
     const item = items[selected];
     detail.className = "language-bank-detail";
-    if (languageBankTab === "speaking") detail.innerHTML =
-      `<span class="kicker">PERSONAL SPEAKING MATERIAL</span><h3>${escapeHtml(item.title)}</h3><section class="language-detail-block language-personal-core"><h4>我的核心素材</h4><p>${escapeHtml(item.personalCore)}</p></section><section class="language-detail-block"><h4>可迁移话题</h4><div class="language-tags">${item.reusableTopics.map(text => `<span>${escapeHtml(text)}</span>`).join("")}</div></section><section class="language-detail-block"><h4>可复用表达</h4><ul class="bilingual-language-list">${bilingualLanguageListMarkup(item.expressions)}</ul></section><section class="language-detail-block"><h4>灵活答题骨架</h4><ul class="bilingual-language-list">${bilingualLanguageListMarkup(item.answerFrames)}</ul></section>`
-    else {
-      const collocations = dailyLanguageSlice(item.collocations, WRITING_MEMORY_LIMITS.collocations, `${item.domain}:collocations`);
-      const sentencePatterns = dailyLanguageSlice(item.sentencePatterns, WRITING_MEMORY_LIMITS.sentencePatterns, `${item.domain}:patterns`);
-      const savedCount = item.collocations.length + item.sentencePatterns.length;
-      const visibleCount = collocations.length + sentencePatterns.length;
-      const missingTranslations = [...item.collocations, ...item.sentencePatterns].filter(value => !bilingualLanguage(value).chinese).length;
-      detail.innerHTML = `<span class="kicker">WRITING LANGUAGE</span><h3>${escapeHtml(item.domain)}</h3><div class="language-memory-note"><span>今天先记 ${visibleCount} 条；本类共保存 ${savedCount} 条，系统会每日轮换，不会删除原有内容。</span>${missingTranslations ? `<button type="button" data-enrich-language>补充中文释义</button>` : ""}</div>${collocations.length ? `<section class="language-detail-block"><h4>${item.domain === "通用表达" ? "通用衔接表达" : "领域核心搭配"}</h4><ul class="bilingual-language-list">${bilingualLanguageListMarkup(collocations)}</ul></section>` : ""}${sentencePatterns.length ? `<section class="language-detail-block"><h4>${item.domain === "通用表达" ? "提升流畅度的句式" : "可复用论证句式"}</h4><ul class="bilingual-language-list">${bilingualLanguageListMarkup(sentencePatterns)}</ul></section>` : ""}`;
-      detail.querySelector('[data-enrich-language]')?.addEventListener("click", generateLanguageBank);
-    }
+    detail.innerHTML = `<span class="kicker">${languageBankTab === "speaking" ? "PERSONAL SPEAKING MATERIAL" : "WRITING LANGUAGE"}</span><h3>${escapeHtml(item.title || item.domain)}</h3>`;
     // Reuse the same durable recall workflow as the module overviews.
     const practice = document.createElement("section"); practice.className = "language-bank-practice";
     const heading = document.createElement("h4"); heading.textContent = "主动回忆与造句";
     const cards = document.createElement("div"); cards.className = "language-recall-list";
     const expressions = languageBankTab === "speaking" ? [...item.expressions, ...item.answerFrames] : [...item.collocations, ...item.sentencePatterns];
-    renderRecallCards(cards, dailyLanguageSlice(expressions, 3, `bank:${languageBankTab}:${item.title || item.domain}`), languageBankTab);
+    const keys = new Set(expressions.map(text => languagePracticeKey(languageBankTab, text)));
+    const scheduled = selectedStudyLanguage(languageBankTab).filter(entry => keys.has(entry.key));
+    renderRecallCards(cards, scheduled, languageBankTab);
+    if (!scheduled.length) cards.textContent = "该分类目前没有到期表达，已掌握的会按间隔再次出现。";
     practice.append(heading, cards);
     // Keep references available without revealing them before the recall attempt.
     const reference = document.createElement("details"); reference.className = "language-reference";
     const summary = document.createElement("summary"); summary.textContent = "查看完整素材与参考表达";
     reference.append(summary);
-    while (detail.children.length > 2) reference.append(detail.children[2]);
+    const context = document.createElement("p"); context.textContent = languageBankTab === "speaking" ? `${item.personalCore}\n可迁移话题：${item.reusableTopics.join("、")}` : `适用领域：${item.domain}`;
+    reference.append(context);
+    languageArchive(reference, studyLanguageEntries(languageBankTab).filter(entry => keys.has(entry.key)), languageBankTab);
+    for (const source of item.sourceKeys?.length ? languageItemSourceRecords(languageBankTab, item) : []) {
+      const button = document.createElement("button"); button.type = "button"; button.className = "button button-quiet"; button.textContent = `相关练习：${source.question || "查看原作答"}`;
+      const skill = languageBankTab;
+      button.addEventListener("click", async () => {
+        const record = (skill === "writing" ? state.writings : state.speaking).find(value => value.id === source.recordId);
+        if (!record) return;
+        if (record.review) return openReviewWorkspace(skill, record.id);
+        if (await routeTo(skill) !== false) skill === "writing" ? loadWriting(record.id) : loadSpeaking(record.id);
+      });
+      reference.append(button);
+    }
     detail.append(practice, reference);
   }
 
@@ -3001,21 +3131,39 @@
       renderLanguageBankWorkspace(null);
       return;
     }
-    const meta = state.languageBank;
-    const migratedKeys = new Set(languageList(meta.sourceKeys));
-    const currentSources = languageBankSource();
-    [...currentSources.speaking, ...currentSources.writing].forEach(item => {
-      if (migratedKeys.has(item.legacySourceKey)) migratedKeys.add(item.sourceKey);
-    });
-    const normalizedContent = JSON.stringify({ speaking: bank.speaking, writing: bank.writing });
-    const storedContent = JSON.stringify({ speaking: Array.isArray(meta.speaking) ? meta.speaking : [], writing: Array.isArray(meta.writing) ? meta.writing : [] });
-    const normalizedKeys = [...migratedKeys];
-    if (normalizedContent !== storedContent || JSON.stringify(normalizedKeys) !== JSON.stringify(languageList(meta.sourceKeys))) {
-      state.languageBank = { ...meta, speaking: bank.speaking, writing: bank.writing, sourceKeys: normalizedKeys };
-      saveState().catch(() => undefined);
-    }
+    // Normalize for display only. The explicit update action commits migrations.
     if (!bank[languageBankTab].length && bank[languageBankTab === "speaking" ? "writing" : "speaking"].length) languageBankTab = languageBankTab === "speaking" ? "writing" : "speaking";
     selectLanguageBankTab(languageBankTab);
+  }
+
+  function studyLanguageEntries(skill) {
+    if (!state.languageBank) return [];
+    const bank = normalizeLanguageBank(state.languageBank);
+    const groups = skill === "writing" ? writingLanguageCategories(bank.writing) : bank.speaking;
+    const entries = groups.flatMap(item => (skill === "writing" ? [...item.collocations, ...item.sentencePatterns] : [...item.expressions, ...item.answerFrames]).map(text => ({ key: languagePracticeKey(skill, text), text, domain: item.domain || item.title, sourceKeys: item.sourceKeys || [] })));
+    return entries.filter((item, index) => entries.findIndex(other => other.key === item.key) === index);
+  }
+
+  function selectedStudyLanguage(skill) {
+    return window.ELPStudy.languageSelection(studyLanguageEntries(skill), state.languagePractice, today());
+  }
+
+  function languageArchive(root, entries, skill) {
+    for (const entry of entries) {
+      const row = document.createElement("div"); row.className = "study-archive-row";
+      const parts = bilingualLanguage(entry.text), text = document.createElement("p");
+      const english = document.createElement("strong"), chinese = document.createElement("small");
+      english.textContent = parts.english; chinese.textContent = parts.chinese; text.append(english, chinese);
+      const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "button button-quiet";
+      const paused = state.languagePractice[entry.key]?.paused;
+      toggle.textContent = paused ? "恢复学习" : "暂停学习"; toggle.setAttribute("aria-pressed", String(Boolean(paused)));
+      toggle.addEventListener("click", async () => {
+        const previous = state.languagePractice[entry.key]; state.languagePractice[entry.key] = { ...previous, paused: !paused };
+        try { await saveState(); renderLanguageBankWorkspace(); renderDailyWritingLanguage(); renderDailySpeakingLanguage(); renderReviewQueue(); }
+        catch { if (previous) state.languagePractice[entry.key] = previous; else delete state.languagePractice[entry.key]; showToast("设置未保存，请重试"); }
+      });
+      row.append(text, toggle); root.append(row);
+    }
   }
 
   function languagePracticeKey(skill, text) {
@@ -3024,7 +3172,7 @@
 
   function scheduleLanguagePractice(key, attempt) {
     if (!state.languagePractice || typeof state.languagePractice !== "object") state.languagePractice = {};
-    state.languagePractice[key] = { ...state.languagePractice[key], attempt };
+    state.languagePractice[key] = { ...state.languagePractice[key], attempt, draftPending: true };
     languageEditVersion++;
     clearTimeout(languageSaveTimer);
     languageSaveTimer = setTimeout(() => flushLanguagePractice(), 600);
@@ -3038,12 +3186,56 @@
     catch { showToast("语料练习尚未保存，请保留页面并重试"); return false; }
   }
 
+  async function finishSpeakingPractice() {
+    if (recordingBusy || recorder?.state === "recording") return showToast("先结束录音并等待转写完成");
+    if (!$("#speakingTranscript").value.trim()) return showToast("先完成一段回答");
+    if (!await saveSpeaking({ silent: true })) return;
+    const record = state.speaking.find(item => item.id === activeSpeakingId);
+    record.status = "completed"; record.completedAt ||= new Date().toISOString();
+    if (state.studyPlan) study.snapshot(planDayForDate(state.studyPlan, today()));
+    study.completed("speaking", record, record.duration / 60);
+    await saveState(true); renderPracticeLanguage(); renderTodayPlan(); renderWeeklyStudy();
+    showToast("本次回答已完成，可核对反馈或稍后复盘");
+  }
+
+  function renderLanguageUse(root, skill, record) {
+    if (!root) return;
+    root.replaceChildren();
+    const text = record?.practiceLanguage;
+    root.classList.toggle("hidden", !text || !(record.status === "completed" || record.review));
+    if (!text) return;
+    const key = languagePracticeKey(skill, text), answer = record.reviewInput?.original || record.essay || record.transcript || "";
+    const fingerprint = languageSourceFingerprint(record.id, answer);
+    const prompt = document.createElement("p"); prompt.textContent = `回看这次回答，${bilingualLanguage(text).english} 用得自然吗？`;
+    const status = document.createElement("small"); status.setAttribute("role", "status");
+    if (record.languageUse?.fingerprint === fingerprint) status.textContent = record.languageUse.rating === "good" ? "已确认自然使用" : "已安排继续练习";
+    const actions = document.createElement("div"); actions.className = "button-row";
+    for (const [rating, label] of [["good", "自然用到了"], ["again", "还要练"]]) {
+      const button = document.createElement("button"); button.type = "button"; button.className = "button button-quiet"; button.textContent = label;
+      button.addEventListener("click", async () => {
+        const previous = record.languageUse, previousReview = state.languagePractice[key], previousLearning = persistence.clone(state.learning);
+        record.languageUse = { fingerprint, rating, checkedAt: new Date().toISOString() };
+        state.languagePractice[key] = window.ELPStudy.rate(previousReview, rating, today());
+        study.recalled({ key, skill }, previousReview, rating);
+        study.event({ type: "language-use", key: `${record.id}:${fingerprint}`, skill, rating });
+        try { await saveState(); renderLanguageUse(root, skill, record); renderReviewQueue(); renderWeeklyStudy(); }
+        catch { record.languageUse = previous; state.languagePractice[key] = previousReview; state.learning = previousLearning; status.textContent = "未能保存，请重试"; }
+      });
+      actions.append(button);
+    }
+    root.append(prompt, actions, status);
+  }
+
   function renderPracticeLanguage() {
     for (const [selector, skill] of [["#writingLanguageReminder", "writing"], ["#completedLanguageReminder", "writing"], ["#speakingLanguageReminder", "speaking"]]) {
       const node = $(selector); if (!node) continue;
       node.classList.toggle("hidden", !practiceLanguage[skill]);
       node.textContent = practiceLanguage[skill] ? `这次可以自然用到：${practiceLanguage[skill].replace("｜", " · ")}` : "";
     }
+    renderLanguageUse($("#writingLanguageUse"), "writing", state.writings.find(item => item.id === activeWritingId));
+    const speaking = state.speaking.find(item => item.id === activeSpeakingId);
+    renderLanguageUse($("#speakingLanguageUse"), "speaking", speaking);
+    $("#finishSpeakingPractice").classList.toggle("hidden", Boolean(speaking?.completedAt));
   }
 
   async function usePracticeLanguage(skill, text) {
@@ -3059,8 +3251,13 @@
       const parts = bilingualLanguage(text), key = languagePracticeKey(skill, text);
       const saved = state.languagePractice?.[key];
       const card = document.createElement("article"); card.className = "language-recall-card";
-      card.innerHTML = `<span class="recall-label">${index + 1} · ${escapeHtml(entry.domain || "主动回忆")}</span><strong class="recall-cue">${escapeHtml(parts.chinese || "先回忆一条表达，再查看参考")}</strong><label class="recall-attempt-label">自己的英文表达或例句<textarea rows="2" placeholder="先试着写，再对照……"></textarea></label><button type="button" class="button button-secondary" data-reveal>查看参考表达</button><div class="recall-answer hidden"><strong></strong><small></small><div class="button-row"><button type="button" class="button button-quiet" data-rating="again">还要练</button><button type="button" class="button button-secondary" data-rating="good">已能使用</button><button type="button" class="button button-quiet" data-use>带去${skill === "writing" ? "写作" : "口语"}</button></div></div><small class="recall-status" role="status"></small>`;
-      const attempt = $("textarea", card); attempt.value = typeof saved?.attempt === "string" ? saved.attempt : "";
+      card.innerHTML = `<details class="recall-disclosure"${index === 0 ? " open" : ""}><summary><span class="recall-label">${index + 1} · ${escapeHtml(entry.domain || "主动回忆")}</span><strong class="recall-cue">${escapeHtml(parts.chinese || "先回忆一条表达，再查看参考")}</strong></summary><div class="recall-body"><label class="recall-attempt-label">自己的英文表达或例句<textarea rows="2" placeholder="先试着写，再对照……"></textarea></label><button type="button" class="button button-secondary" data-reveal>查看参考表达</button><div class="recall-answer hidden"><strong></strong><small></small><div class="button-row"><button type="button" class="button button-quiet" data-rating="again">还要练</button><button type="button" class="button button-secondary" data-rating="good">已能使用</button><button type="button" class="button button-quiet" data-use>带去${skill === "writing" ? "写作" : "口语"}</button></div></div><small class="recall-status" role="status"></small></div></details>`;
+      const disclosure = $(".recall-disclosure", card);
+      // Collapse inputs without rebuilding them so drafts and revealed answers stay intact.
+      disclosure.addEventListener("toggle", () => {
+        if (disclosure.open) $$(".recall-disclosure", root).forEach(other => { if (other !== disclosure) other.open = false; });
+      });
+      const attempt = $("textarea", card); attempt.value = typeof saved?.attempt === "string" && (saved.draftPending || !saved.lastReviewedDate) ? saved.attempt : "";
       attempt.addEventListener("input", () => scheduleLanguagePractice(key, attempt.value));
       $(".recall-answer strong", card).textContent = parts.english;
       $(".recall-answer small", card).textContent = parts.chinese;
@@ -3070,15 +3267,18 @@
         $(".recall-answer", card).classList.remove("hidden"); event.currentTarget.classList.add("hidden");
       });
       $$('[data-rating]', card).forEach(button => button.addEventListener("click", async () => {
+        if (button.dataset.rating === "good" && !attempt.value.trim()) { status.textContent = "先尝试写出表达，再判断能否独立使用"; return; }
         const controls = $$('button', card); controls.forEach(control => { control.disabled = true; });
         attempt.readOnly = true;
         scheduleLanguagePractice(key, attempt.value);
         clearTimeout(languageSaveTimer);
         const version = languageEditVersion;
         const previous = { ...state.languagePractice[key] };
-        state.languagePractice[key] = { ...previous, lastReviewedDate: today(), rating: button.dataset.rating };
-        try { await saveState(true); languageSavedVersion = version; status.textContent = button.dataset.rating === "good" ? "已记录，下次试着自然用进回答" : "已记录，稍后再试一次"; }
-        catch { state.languagePractice[key] = previous; status.textContent = "保存失败，例句仍在这里，请重试"; }
+        const previousLearning = persistence.clone(state.learning);
+        state.languagePractice[key] = { ...window.ELPStudy.rate(previous, button.dataset.rating, today()), attempt: attempt.value, draftPending: false, introducedDate: previous.introducedDate || today() };
+        study.recalled({ key, skill }, previous, button.dataset.rating);
+        try { await saveState(true); languageSavedVersion = version; status.textContent = `已记录，下次复习 ${state.languagePractice[key].dueDate}${state.languagePractice[key].retryAt ? "，至少间隔五分钟" : ""}`; renderReviewQueue(); renderTodayPlan(); renderWeeklyStudy(); }
+        catch { state.languagePractice[key] = previous; state.learning = previousLearning; status.textContent = "保存失败，例句仍在这里，请重试"; }
         finally { attempt.readOnly = false; controls.forEach(control => { control.disabled = false; }); }
       }));
       $("[data-use]", card).addEventListener("click", () => usePracticeLanguage(skill, text));
@@ -3086,43 +3286,18 @@
     }
   }
 
-  function renderDailyWritingLanguage() {
-    const root = $("#dailyWritingLanguage");
+  function renderDailyWritingLanguage() { renderDailyLanguage("writing"); }
+  function renderDailySpeakingLanguage() { renderDailyLanguage("speaking"); }
+  function renderDailyLanguage(skill) {
+    const writing = skill === "writing", root = $(writing ? "#dailyWritingLanguage" : "#dailySpeakingLanguage");
     if (!root) return;
-    const bank = state.languageBank ? normalizeLanguageBank(state.languageBank) : null;
-    const entries = writingLanguageCategories(bank?.writing || []).flatMap(item => [
-      ...item.collocations.map(text => ({ domain: item.domain, kind: "词组与搭配", text })),
-      ...item.sentencePatterns.map(text => ({ domain: item.domain, kind: "常用句式", text }))
-    ]);
-    root.closest?.(".daily-writing-language")?.classList.toggle("hidden", !entries.length);
-    $("#writingOverviewWelcome").classList.toggle("hidden", Boolean(entries.length));
-    if (!entries.length) {
-      root.className = "daily-language-cards empty-state";
-      root.textContent = "生成个人写作语料库后，这里会每天推荐少量搭配与句式。";
-      return;
-    }
-    const dayIndex = Math.floor(new Date().setHours(0, 0, 0, 0) / 86400000);
-    const count = Math.min(3, entries.length);
-    const selected = Array.from({ length: count }, (_, index) => entries[(dayIndex * count + index) % entries.length]);
+    const entries = studyLanguageEntries(skill);
+    root.closest?.(writing ? ".daily-writing-language" : ".daily-speaking-language")?.classList.toggle("hidden", !entries.length);
+    $(writing ? "#writingOverviewWelcome" : "#speakingOverviewWelcome").classList.toggle("hidden", Boolean(entries.length));
     root.className = "daily-language-cards";
-    renderRecallCards(root, selected, "writing");
-  }
-
-  function renderDailySpeakingLanguage() {
-    const root = $("#dailySpeakingLanguage");
-    if (!root) return;
-    const bank = state.languageBank ? normalizeLanguageBank(state.languageBank) : null;
-    const saved = uniqueSpeakingLanguage((bank?.speaking || []).flatMap(item => [...item.expressions, ...item.answerFrames]));
-    root.closest?.(".daily-speaking-language")?.classList.toggle("hidden", !saved.length);
-    $("#speakingOverviewWelcome").classList.toggle("hidden", Boolean(saved.length));
-    if (!saved.length) {
-      root.className = "daily-language-cards empty-state";
-      root.textContent = "生成个人口语语料后，这里会从真实口语记录中轮换少量表达。";
-      return;
-    }
-    const selected = dailyLanguageSlice(saved, 3, "daily-speaking-fluency");
-    root.className = "daily-language-cards";
-    renderRecallCards(root, selected, "speaking");
+    const selected = selectedStudyLanguage(skill);
+    renderRecallCards(root, selected, skill);
+    if (!selected.length) root.textContent = entries.length ? "今天的表达已练过，下一次到期会再出现。" : "完成练习后，可按需整理自己的表达。";
   }
 
   function resizePracticeTextarea(element, minimum, maximum = 620) {
@@ -3177,27 +3352,42 @@
   }
 
   async function requestLanguageBank(payload, merge = false) {
-    const system = `你是个人英语语料整理助手。${merge ? "输入是若干批次的结构化提炼结果；先识别语义相近的主题并合并，同义项只保留一次，补齐缺失的中文释义，并保留来源中具体、自然且易复用的表达。" : "只依据用户真实答题记录归纳，不补造经历、观点、身份或事实。"}输入只有口语记录时 speaking 才能有内容且 writing 必须为空；输入只有写作记录时 writing 才能有内容且 speaking 必须为空，绝对禁止把议论文观点、书面论证搭配或写作范文整理成口语个人素材。每一项的 sourceKeys 必须只填写实际使用过的输入 sourceKey。口语优先把同一个人的真实经历、偏好、人物、地点和物品整理成可跨陌生题目迁移的素材，同时保留自然、可说出口的英文表达和灵活答题骨架；reusableTopics 必须全部使用简短中文标签，不得输出英文标签；expressions 和 answerFrames 的每一个字符串都必须使用“英文｜简洁准确的中文翻译”格式，必须包含全角分隔符“｜”和中文释义；合并旧内容时也要为原来只有英文的项目补齐翻译；不要生成死板整段背诵答案。相似口语主题必须合并为一个主题，例如家乡食物、饺子、节日团聚和家庭记忆应在同一张主题卡中补充，不得仅因标题措辞不同而新建重复卡片。写作必须少而精，按“教育、科技、犯罪与法律、商业与经济、环境、健康、社会与公共政策、交通与城市、文化与媒体、通用表达”归类，没有内容的分类不要输出；相近小领域合并到最接近的大类。每个领域每次最多给 5 条短搭配和 3 个短句式，优先选择能表达原因、影响和解决方案的内容。另设“通用表达”一类，整理 however、such as、more importantly、in contrast、as a result 等提升衔接与流畅度的表达，不要在各领域重复。writing 中 collocations 和 sentencePatterns 的每一个字符串也必须使用“英文｜简洁准确的中文翻译”格式；合并旧内容时补齐翻译。只返回一个 JSON 对象，禁止 Markdown、代码块和额外文字。结构严格为 {summary:string,speaking:[{title:string,personalCore:string,reusableTopics:string[],expressions:string[],answerFrames:string[],sourceKeys:string[]}],writing:[{domain:string,collocations:string[],sentencePatterns:string[],sourceKeys:string[]}]}。所有键必须存在，数组无内容时返回空数组。`;
-    const response = await window.ELPAI.send({
+    const system = `你是个人英语语料整理助手。${merge ? "输入是若干批次的结构化提炼结果；先识别语义相近的主题并合并，同义项只保留一次，补齐缺失的中文释义，并保留来源中具体、自然且易复用的表达。" : "只依据用户真实答题记录归纳，不补造经历、观点、身份或事实。"}输入只有口语记录时 speaking 才能有内容且 writing 必须为空；输入只有写作记录时 writing 才能有内容且 speaking 必须为空，绝对禁止把议论文观点、书面论证搭配或写作范文整理成口语个人素材。每一项的 sourceKeys 必须只填写实际使用过的输入 sourceKey。口语优先把同一个人的真实经历、偏好、人物、地点和物品整理成可跨陌生题目迁移的素材，同时保留自然、可说出口的英文表达和灵活答题骨架；reusableTopics 必须全部使用简短中文标签，不得输出英文标签；expressions 和 answerFrames 的每一个字符串都必须使用“英文｜简洁准确的中文翻译”格式，必须包含全角分隔符“｜”和中文释义；合并旧内容时也要为原来只有英文的项目补齐翻译；不要生成死板整段背诵答案。相似口语主题必须合并为一个主题，例如家乡食物、饺子、节日团聚和家庭记忆应在同一张主题卡中补充，不得仅因标题措辞不同而新建重复卡片。写作必须少而精，按“教育、科技、犯罪与法律、商业与经济、环境、健康、社会与公共政策、交通与城市、文化与媒体、通用表达”归类，没有内容的分类不要输出；相近小领域合并到最接近的大类。每个领域每次最多给 5 条短搭配和 3 个短句式，必须根据来源 Task 区分用途。Task 2 保留原因、影响、论证和解决方案。Task 1 Academic 单列“Task 1 学术图表”，提炼概览、趋势、数据比较、流程或地图变化；Task 1 General 单列“Task 1 书信”，提炼写信目的、请求、解释及适当语气。中文释义注明具体用途，不能把图表表达和书信套成议论文。只提炼来源实际支持的内容。另设“通用表达”一类，整理 however、such as、more importantly、in contrast、as a result 等提升衔接与流畅度的表达，不要在各领域重复。writing 中 collocations 和 sentencePatterns 的每一个字符串也必须使用“英文｜简洁准确的中文翻译”格式；合并旧内容时补齐翻译。只返回一个 JSON 对象，禁止 Markdown、代码块和额外文字。结构严格为 {summary:string,speaking:[{title:string,personalCore:string,reusableTopics:string[],expressions:string[],answerFrames:string[],sourceKeys:string[]}],writing:[{domain:string,collocations:string[],sentencePatterns:string[],sourceKeys:string[]}]}。所有键必须存在，数组无内容时返回空数组。`;
+    return window.ELPAI.validated({
       messages: [
         { role: "system", content: system },
+        { role: "system", content: "逐条核对来源。每个输入 sourceKey 必须出现在对应 speaking/writing 条目的 sourceKeys 中；确实没有可提炼内容的来源，放入顶层 noContentSources:[{sourceKey:string,reason:string}]，reason 必须说明具体原因。不得把缺失、失败或遗漏标作无内容，不得编造来源。翻译旧语料时可保留空来源列表。" },
         { role: "user", content: `${reviewLearnerContext("个人语料库")}\n\n${merge ? "待合并的分批结果" : "本批练习记录（不含录音与图片）"}：\n${JSON.stringify(payload)}` }
       ], temperature: 0, max_tokens: 6000, output_contract: "personal-language-bank-json-v1"
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "请求失败");
-    const normalized = normalizeLanguageBank(parseAiJson(data.content));
+    }, data => {
+    const parsed = parseAiJson(data.content);
+    const normalized = normalizeLanguageBank(parsed);
     const speakingKeys = languagePayloadSourceKeys(payload, "speaking");
     const writingKeys = languagePayloadSourceKeys(payload, "writing");
-    const attachKeys = (items, allowed) => items.map(item => {
-      const accepted = languageList(item.sourceKeys).filter(key => allowed.includes(key));
-      return { ...item, sourceKeys: accepted.length ? accepted : [...allowed] };
-    });
+    const covered = new Set(), allowedKeys = new Set([...speakingKeys, ...writingKeys]);
+    for (const [kind, allowed] of [["speaking", speakingKeys], ["writing", writingKeys]]) {
+      if (!languagePayloadHasKind(payload, kind) && normalized[kind].length) throw new Error("AI 返回了其他模块的语料，未标记本批来源");
+      for (const item of normalized[kind]) {
+        if ((!merge && !item.sourceKeys.length) || item.sourceKeys.some(key => !allowed.includes(key))) throw new Error("AI 语料来源缺失或不属于本批，未标记本批来源");
+        item.sourceKeys.forEach(key => covered.add(key));
+      }
+    }
+    const noContentSources = [];
+    if (!merge) {
+      if (parsed.noContentSources !== undefined && !Array.isArray(parsed.noContentSources)) throw new Error("无内容来源说明格式无效");
+      for (const outcome of parsed.noContentSources || []) {
+        if (!outcome || !allowedKeys.has(outcome.sourceKey) || covered.has(outcome.sourceKey) || typeof outcome.reason !== "string" || !outcome.reason.trim()) throw new Error("无内容来源说明缺失、重复或与提取结果矛盾");
+        noContentSources.push({sourceKey: outcome.sourceKey, reason: outcome.reason.trim()});
+        covered.add(outcome.sourceKey);
+      }
+      if ([...allowedKeys].some(key => !covered.has(key))) throw new Error("AI 未完成本批所有来源的提取或无内容说明，未标记本批来源");
+    }
     return {
       ...normalized,
-      speaking: languagePayloadHasKind(payload, "speaking") ? attachKeys(normalized.speaking, speakingKeys) : [],
-      writing: languagePayloadHasKind(payload, "writing") ? attachKeys(normalized.writing, writingKeys) : []
+      noContentSources,
+      verifiedSourceKeys: [...covered]
     };
+    });
   }
 
   function generateLanguageBank() { return aiTasks.run(() => generateLanguageBankTask()); }
@@ -3239,9 +3429,12 @@
         $("#languageBankStatus").innerHTML = `<div><strong>正在补充中文释义 ${index + 1} / ${translationBatches.length}…</strong><span>旧英文会原样保留，只增加对应的简洁中文翻译。</span></div>`;
         normalizedBank = mergeLanguageBanks(normalizedBank, await requestLanguageBank({ batches: [translationBatches[index]] }, true));
       }
-      if (!normalizedBank.speaking.length && !normalizedBank.writing.length) throw new Error("AI 返回的 JSON 没有可用语料，请重试或更换模型");
-      state.languageBank = { ...normalizedBank, generatedAt: new Date().toISOString(), sourceCounts: { speaking: allSource.speaking.length, writing: allSource.writing.length }, sourceKeys: uniqueLanguage([...processed, ...source.speaking.map(item => item.sourceKey), ...source.writing.map(item => item.sourceKey)]) };
-      await saveState(true);
+      const verifiedSourceKeys = partials.flatMap(partial => partial.verifiedSourceKeys);
+      const noContentSources = partials.flatMap(partial => partial.noContentSources);
+      if (!normalizedBank.speaking.length && !normalizedBank.writing.length && !noContentSources.length) throw new Error("AI 返回的 JSON 没有可用语料，请重试或更换模型");
+      const previousBank = state.languageBank;
+      state.languageBank = { ...normalizedBank, generatedAt: new Date().toISOString(), sourceCounts: { speaking: allSource.speaking.length, writing: allSource.writing.length }, sourceKeys: uniqueLanguage([...processed, ...verifiedSourceKeys]), noContentSources: [...(previousBank?.noContentSources || []), ...noContentSources] };
+      try { await saveState(true); } catch (error) { state.languageBank = previousBank; throw error; }
       renderLanguageBank();
       renderDailyWritingLanguage();
       renderDailySpeakingLanguage();
@@ -3263,7 +3456,7 @@
     renderLanguageBank();
     renderDailyWritingLanguage();
     renderDailySpeakingLanguage();
-    renderPracticeOverviewPlans();
+    renderPracticeOverviewPlans(); renderReviewQueue(); renderWeeklyStudy();
   }
 
   async function useWritingQuestion({ packId, unit }) {
@@ -3378,8 +3571,19 @@
       routeTo(skill);if(skill==="writing"){await newWriting();$("#pickWritingQuestion").click();}else{await newSpeaking();$("#pickSpeakingQuestion").click();}
     });
     window.addEventListener("elp:question-image", event => openReviewImageLightbox(event.detail.src, event.detail.alt));
-    window.addEventListener("elp:route", event => { if (event.detail === "home") refreshLibraryMetrics(); });
-    window.addEventListener("elp:practice-saved", () => { if (location.hash === "#home") refreshLibraryMetrics(); });
+    window.addEventListener("elp:route", event => {
+      renderReviewQueue(); renderWeeklyStudy();
+      if (event.detail === "home") refreshLibraryMetrics();
+      if (event.detail === "mistakes") renderNotebookPractice();
+      if (event.detail === "writing") renderDailyWritingLanguage();
+      if (event.detail === "speaking") renderDailySpeakingLanguage();
+    });
+    setInterval(() => {
+      if (document.hidden || document.activeElement?.closest?.(".language-recall-card, .vocabulary-study-card")) return;
+      renderReviewQueue();
+      if (!correctionSession?.queue.length && !vocabularySession?.queue.length) renderNotebookPractice();
+    }, 60000);
+    window.addEventListener("elp:practice-saved", event => { if (event.detail?.submitted || location.hash === "#home") refreshLibraryMetrics(); });
     $("#pickWritingQuestion").addEventListener("click", () => window.ELPLibrary.openPicker($("#writingQuestionPicker"), "writing", useWritingQuestion));
     $("#pickSpeakingQuestion").addEventListener("click", () => window.ELPLibrary.openPicker($("#speakingQuestionPicker"), "speaking", useSpeakingQuestion));
     $("#saveWritingToBank").addEventListener("click", async () => {
@@ -3532,16 +3736,15 @@
     $$('[data-language-tab]').forEach(button => button.addEventListener("click", () => selectLanguageBankTab(button.dataset.languageTab)));
     $("#saveManualPlan").addEventListener("click", saveManualPlan);
     $("#generateAiPlan").addEventListener("click", generateAiPlan);
-    $("#deletePlan").addEventListener("click", () => {
-      if (!confirm("确定删除当前学习计划和全部计划打卡吗？练习记录与错题本不会删除。")) return;
-      state.studyPlan = null;
-      state.planProgress = {};
-      saveState();
-      renderStudyPlan();
-      renderTodayPlan();
-      showToast("学习计划已删除");
+    $("#deletePlan").addEventListener("click", async () => {
+      if (!confirm("确定删除当前学习计划吗？学习历史和复习进度会保留。")) return;
+      const previous = state.studyPlan;
+      await persistRemoval({remove() { state.studyPlan = null; }, restore() { state.studyPlan = previous; }, after() {
+        study.reset(); renderStudyPlan(); renderTodayPlan(); showToast("学习计划已删除");
+      }});
     });
     $("#mistakeForm").addEventListener("submit", saveMistake);
+    $("#finishSpeakingPractice").addEventListener("click", () => finishSpeakingPractice().catch(error => showToast(error.message)));
     $("#startCorrectionStudy").addEventListener("click", () => startCorrectionStudy());
     $("#stopCorrectionStudy").addEventListener("click", () => {
       if (correctionSaving) return;
@@ -3549,7 +3752,7 @@
       renderNotebookPractice();
     });
     $("#correctionStudyAttempt").addEventListener("input", event => {
-      if (correctionSession && !correctionSession.revealed && !correctionSaving) correctionSession.draft = event.target.value;
+      if (correctionSession && !correctionSession.revealed && !correctionSaving) saveRecallDraft(correctionSession, "correction", event.target.value);
     });
     $("#revealCorrectionAnswer").addEventListener("click", () => {
       if (!correctionSession || correctionSaving) return;
@@ -3563,7 +3766,8 @@
       renderCorrectionStudy();
     });
     $$('[data-correction-rating]').forEach(button => button.addEventListener("click", () => rateCorrection(button.dataset.correctionRating)));
-    $("#startVocabularyStudy").addEventListener("click", startVocabularyStudy);
+    $("#startVocabularyStudy").addEventListener("click", () => startVocabularyStudy());
+    $("#vocabularyStudyAttempt").addEventListener("input", event => { if (vocabularySession && !vocabularySession.revealed && !vocabularySaving) saveRecallDraft(vocabularySession, "vocabulary", event.target.value); });
     $("#stopVocabularyStudy").addEventListener("click", () => { if (!vocabularySaving) { vocabularySession = null; renderVocabularyStudy(); } });
     $("#revealVocabularyAnswer").addEventListener("click", () => { if (vocabularySession) { vocabularySession.revealed = true; renderVocabularyStudy(); $("#vocabularyAgain").focus(); } });
     $("#vocabularyAgain").addEventListener("click", () => rateVocabulary(false));
@@ -3582,6 +3786,7 @@
     aiSettingsController?.bind();
     $("#exportData").addEventListener("click", exportData);
     $("#exportFullBackup").addEventListener("click", exportFullBackup);
+    $("#recoverStudyRecords").addEventListener("click", recoverStudyRecords);
     $("#restoreFullBackup").addEventListener("change", event => restoreFullBackup(event.target.files[0]));
     $("#importData").addEventListener("change", event => importBackup(event.target.files[0]));
     $("#selectDataDirectory").addEventListener("click", selectDataDirectory);
@@ -3600,7 +3805,7 @@
       }
     });
     window.addEventListener("beforeunload", event => {
-      if (writingDraft.dirty || speakingDraft.dirty || persistence.dirty || recordingBusy || recorder?.state === "recording" || aiTasks.busy) {
+      if (writingDraft.dirty || speakingDraft.dirty || recallDrafts.dirty || persistence.dirty || recordingBusy || recorder?.state === "recording" || aiTasks.busy) {
         event.preventDefault(); event.returnValue = "";
       }
     });
@@ -3627,15 +3832,16 @@
 
   window.ELPPracticeActions = Object.freeze({ question: openLibraryQuestion });
   window.ELPStudyPlan = Object.freeze({
-    today: () => ({ day: planDayForDate(state.studyPlan, today()), tasks: todayPlanTasks(), progress: { ...(state.planProgress[today()] || {}) } }),
-    start: id => { todayTaskActions = new Map(todayPlanTasks().map(task => [task.id, task])); return startTodayTask(id); },
-    mark: async (id, done) => {
-      if (!todayPlanTasks().some(task => task.id === id)) throw new Error("今天没有这项任务");
-      const date = today(); state.planProgress[date] ||= {}; const previous = state.planProgress[date][id];
-      state.planProgress[date][id] = done;
-      try { await saveState(done); } catch (error) { state.planProgress[date][id] = previous; throw error; }
-      renderTodayPlan();
+    today: () => ({ day: planDayForDate(state.studyPlan, today()), tasks: todayPlanTasks(), progress: study.progress() }),
+    start: startTodayTask,
+    mark: (id, done) => study.mark(id, done, planDayForDate(state.studyPlan, today())),
+    syncObjective: async () => study.syncObjective((await window.ELPLibrary.request("attempts")).attempts || [], { persist: true }),
+    completed: async (skill, record) => {
+      if (state.studyPlan) study.snapshot(planDayForDate(state.studyPlan, today()));
+      study.completed(skill, record, Number(record.elapsedSeconds || record.duration || 0) / 60);
+      await saveState(true); renderTodayPlan(); renderWeeklyStudy();
     }
   });
+
   initialize();
 })();

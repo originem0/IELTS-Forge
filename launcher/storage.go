@@ -120,8 +120,8 @@ func loadDataFromPath(dataPath, fallbackPath string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if envelope.Version == 2 {
-		return (&diskStore{directory: filepath.Dir(dataPath)}).resolveStudyManifest(envelope.Data)
+	if envelope.ResolvedData != nil {
+		return envelope.ResolvedData, nil
 	}
 	return envelope.Data, nil
 }
@@ -130,6 +130,9 @@ func decodeDiskEnvelope(raw []byte) (json.RawMessage, error) {
 	var envelope diskDataEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
+	}
+	if envelope.Version > 2 {
+		return nil, errUnsupportedDataVersion
 	}
 	if len(envelope.Data) == 0 || !json.Valid(envelope.Data) {
 		return nil, errors.New("数据文件缺少有效的 data 字段")
@@ -167,7 +170,17 @@ func (s *diskStore) writeEnvelopeLocked(envelope diskDataEnvelope) error {
 	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
 		return previousErr
 	}
-	if _, validErr := decodeDiskEnvelope(previous); previousErr == nil && validErr == nil {
+	// Protect every write path, including internal saves that bypass revision checks.
+	if _, err := decodeDiskEnvelope(previous); errors.Is(err, errUnsupportedDataVersion) {
+		return err
+	}
+	_, validErr := validateDiskSnapshot(previous, s.directory)
+	if previousErr == nil && validErr != nil {
+		if err := preserveDamagedFile(dataPath, previous); err != nil {
+			return err
+		}
+	}
+	if previousErr == nil && validErr == nil {
 		if err := atomicLibraryWrite(backupPath, previous); err != nil {
 			return fmt.Errorf("创建滚动备份失败：%w", err)
 		}
@@ -316,22 +329,32 @@ var errRevisionRequired = errors.New("缺少档案版本，请重新加载页面
 func (s *diskStore) snapshot() (map[string]any, error) {
 	s.RLock()
 	defer s.RUnlock()
-	data, err := s.loadLocked()
-	if err != nil {
-		return nil, err
-	}
+	data := json.RawMessage(`{}`)
 	revision := dataRevision(json.RawMessage(`{}`))
+	status := s.statusLocked()
 	if s.directory != "" {
 		envelope, err := readDiskEnvelope(s.dataPathLocked(), s.backupPathLocked())
 		if err != nil {
 			return nil, err
 		}
 		revision = dataRevision(envelope.Data)
+		data = envelope.ResolvedData
+		if data == nil {
+			data = envelope.Data
+		}
+		if envelope.RecoverySource != "" {
+			status["recoverySource"] = envelope.RecoverySource
+		}
 	}
-	return map[string]any{"data": data, "revision": revision, "storage": s.statusLocked()}, nil
+	return map[string]any{"data": data, "revision": revision, "storage": status}, nil
 }
 
-func (s *diskStore) saveConditional(data json.RawMessage, directoryID, expected string) (map[string]any, error) {
+func preserveDamagedFile(path string, data []byte) error {
+	// Content-address the original beside the file; retries never overwrite evidence.
+	return atomicLibraryWrite(path+".damaged-"+hashContent(data), data)
+}
+
+func (s *diskStore) saveConditional(data json.RawMessage, directoryID, expected string, commitIDs ...string) (map[string]any, error) {
 	var object map[string]json.RawMessage
 	if json.Unmarshal(data, &object) != nil || object == nil {
 		return nil, errors.New("学习数据必须是 JSON 对象")
@@ -351,13 +374,20 @@ func (s *diskStore) saveConditional(data json.RawMessage, directoryID, expected 
 	if err != nil {
 		return nil, err
 	}
+	commit, err := identifyCommit(commitIDs, "PUT", expected, data)
+	if err != nil {
+		return nil, err
+	}
+	if replay, err := s.replayCommit(previous.Commits, commit); replay != nil || err != nil {
+		return replay, err
+	}
 	if dataRevision(previous.Data) != expected {
 		return nil, errDataConflict
 	}
 	if err := s.validateStudyMedia(data); err != nil {
 		return nil, err
 	}
-	if err := s.writeLocked(data); err != nil {
+	if err := s.writeEnvelopeLocked(diskDataEnvelope{Version: 1, UpdatedAt: time.Now().Format(time.RFC3339), Data: data, Commits: appendCommit(previous.Commits, commit, dataRevision(data))}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"saved": true, "revision": dataRevision(data), "storage": s.statusLocked()}, nil

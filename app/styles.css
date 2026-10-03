@@ -863,3 +863,25 @@ body.practice-focus .writing-editor > .ai-output { display: none !important; }
   .timer-block { flex: 1 1 120px; }
   .manual-targets { grid-template-columns: 1fr; }
 }
+/* Review actions share the existing quiet toolbar rhythm and stay compact on
+   narrow windows. Saved references are disclosed separately from recall. */
+.study-due-panel { margin-top: 16px; border-top: 1px solid var(--border, #e5e5e5); padding-top: 12px; }
+.study-due-panel summary { cursor: pointer; font-weight: 600; }
+.study-queue { display: grid; gap: 4px; margin-top: 10px; }
+.study-queue-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.study-queue-row > span { flex: 0 0 2.5em; color: var(--muted, #777); font-size: 12px; }
+.study-queue-row > button { text-align: left; white-space: normal; overflow-wrap: anywhere; min-height: 32px; }
+.study-weekly-evidence { font-size: 13px; line-height: 1.8; color: var(--muted, #777); }
+.study-options { border: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 16px; }
+.study-options legend { font-size: 12px; margin-bottom: 6px; }
+.study-option, .study-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.study-option input, .study-options input { width: auto; }
+.study-archive-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border, #e5e5e5); }
+.study-archive-row p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.study-archive-row strong, .study-archive-row small { display: block; }
+.study-archive-row small { margin-top: 4px; color: var(--muted, #777); }
+.study-archive-row button { flex-shrink: 0; min-height: 32px; }
+.study-language-use { margin: 16px 0; padding: 12px 0; border-top: 1px solid var(--border, #e5e5e5); }
+.study-language-use p { margin: 0 0 8px; font-size: 13px; }
+#finishSpeakingPractice { margin: 0 0 12px; }
+@media (max-width: 520px) { .study-archive-row { align-items: flex-start; gap: 8px; } .study-archive-row button { padding-inline: 8px; } }

@@ -25,9 +25,33 @@
   }
 
   function reviewFormatContract(kind) {
-    const speaking = kind === "speaking";
-    return `你返回的内容会被不同服务商的 OpenAI 兼容 API 直接填入固定网页组件。必须只输出 Markdown，不要寒暄、前言、HTML、代码块或额外章节。第一行固定为“主题：8–20 个汉字的具体主题短标题”。之后只允许按以下顺序各出现一次三级标题：\n### 评分与小分\n### 总体评价\n${speaking ? "### 转写整理稿\n" : ""}### 确定语法错误\n### 原文优化建议\n### 目标水平范文\n### 最终值得记忆的语料\n“评分与小分”必须在第一行给出醒目的非官方总分或暂定总分，再用 Markdown 表格列出各项小分与证据；每项证据控制在 70 个汉字以内，直说最重要的优缺点，不要堆砌长解释。${speaking ? "第一行严格写成‘基于转写的暂定总分：X（合理区间：Y–Z；真实总分会受发音影响）’。FC、LR、GRA 给出分数；P 写‘不可仅凭转写判断’。‘转写整理稿’只能补标点、大小写和分段，不得增删替换词。" : "第一行严格写成‘非官方总分：X’。Task 1 列 TA、CC、LR、GRA；Task 2 列 TR、CC、LR、GRA；不得混用 TA 与 TR。"}“确定语法错误”只能使用四列表格，表头严格为“原文｜修改｜类型｜原因”；原文逐字引用、修改尽量小，没有确定错误就写明没有，不得制造错误。ASCII 连字符、en dash、em dash、直引号与弯引号之间的排版偏好不属于确定语法错误，应放到可选优化或省略。“原文优化建议”只放正确但可提升的内容，不得使用纠错表。“目标水平范文”包含英文范文和必要的中文说明或翻译。“最终值得记忆的语料”禁止使用表格，必须严格使用两个四级标题“#### 核心搭配”和“#### 实用句式”，标题下只使用项目符号；每条严格写成“英文｜简洁中文释义或用途”，核心搭配最多 5 条，实用句式最多 3 条。所有评价必须针对用户提供的完整题目、题型和回答。`;
+    return `只输出 JSON 对象，不要 Markdown、代码块或其他文字。此格式要求取代前文的标题和表格要求，评分与纠错原则仍然适用。结构为 {topic:string,overall:number,range:number[],criteria:[{code:string,score:number|null,evidence:string}],overview:string,transcript:string,corrections:[{original:string,replacement:string,type:string,reason:string}],improvements:[{original:string,suggestion:string,reason:string}],modelAnswer:string,modelExplanation:string,language:{collocations:[{english:string,chinese:string}],sentencePatterns:[{english:string,chinese:string}]}}。全部字段必需。分数范围 0 到 9、步长 0.5。主题、总体评价、范文和各项证据不能空白。没有纠错或优化时返回空数组，不能制造错误。original 逐字引用原文，corrections 只包含确定错误，improvements 只含可选优化。语料含中文释义，搭配最多 5 条、句式最多 3 条。${kind === "speaking" ? "criteria 恰含 FC、LR、GRA、P；P.score 必须为 null，证据说明无法仅凭转写判断发音。range 为包含 overall 的合理区间 [下限,上限]。transcript 仅补标点、大小写和分段，不得增删替换词。" : "Task 1 的 criteria 恰含 TA、CC、LR、GRA；Task 2 恰含 TR、CC、LR、GRA。range 为空数组，transcript 为空字符串。"}`;
   }
 
- return Object.freeze({IELTS_WRITING_SCORING_GUIDE,IELTS_SPEAKING_SCORING_GUIDE,writingTaskAssessment,speakingPartAssessment,reviewFormatContract});
+  // JSON is the stored result; this deterministic adapter keeps legacy report and
+  // annotation components working without allowing a model to choose their layout.
+  function reviewPresentation(content, kind) {
+    const parsed = JSON.parse(content);
+    const pick = (value, keys) => Object.fromEntries(keys.map(key => [key, value[key]]));
+    const report = pick(parsed, ["topic","overall","range","overview","transcript","modelAnswer","modelExplanation"]);
+    report.criteria = parsed.criteria.map(item => pick(item,["code","score","evidence"]));
+    report.corrections = parsed.corrections.map(item => pick(item,["original","replacement","type","reason"]));
+    report.improvements = parsed.improvements.map(item => pick(item,["original","suggestion","reason"]));
+    report.language = Object.fromEntries(["collocations","sentencePatterns"].map(key => [key,parsed.language[key].map(item => pick(item,["english","chinese"]))]));
+    const plain = value => String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/([\\`*_{}\[\]()#+.!|~-])/g,"\\$1");
+    const cell = value => plain(value).replace(/\r?\n/g," ");
+    const row = values => "| " + values.map(cell).join(" | ") + " |";
+    const lines = ["主题："+cell(report.topic),"", "### 评分与小分", kind === "speaking" ? `基于转写的暂定总分：${report.overall}（合理区间：${report.range.join("–")}；真实总分会受发音影响）` : `非官方总分：${report.overall}`,"", "| 项目 | 小分 | 证据 |","| --- | --- | --- |", ...report.criteria.map(c => row([c.code,c.score ?? "不可仅凭转写判断",c.evidence])), "", "### 总体评价", plain(report.overview), ""];
+    if (kind === "speaking") lines.push("### 转写整理稿",plain(report.transcript), "");
+    lines.push("### 确定语法错误");
+    if (report.corrections.length) lines.push("| 原文 | 修改 | 类型 | 原因 |","| --- | --- | --- | --- |",...report.corrections.map(c=>row([c.original,c.replacement,c.type,c.reason])));
+    else lines.push("没有确定语法错误。");
+    lines.push("", "### 原文优化建议", ...report.improvements.map(c=>`- ${cell(c.original)} → ${cell(c.suggestion)}。${cell(c.reason)}`));
+    if (!report.improvements.length) lines.push("没有额外优化建议。");
+    lines.push("", "### 目标水平范文",plain(report.modelAnswer),"",plain(report.modelExplanation),"", "### 最终值得记忆的语料");
+    for (const [key,title] of [["collocations","核心搭配"],["sentencePatterns","实用句式"]]) lines.push("", "#### "+title,...report.language[key].map(e=>`- ${cell(e.english)}｜${cell(e.chinese)}`));
+    return {report,markdown:lines.join("\n")};
+  }
+
+ return Object.freeze({IELTS_WRITING_SCORING_GUIDE,IELTS_SPEAKING_SCORING_GUIDE,writingTaskAssessment,speakingPartAssessment,reviewFormatContract,reviewPresentation});
 });

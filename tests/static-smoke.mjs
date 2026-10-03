@@ -32,10 +32,11 @@ assert.doesNotMatch(html + script, /transcriptionEngine|SpeechRecognition|webkit
 assert.doesNotMatch(html + script, /punctuateTranscript|id="punctuateSpeaking"/, "browser transcripts must not be auto-formatted");
 assert.match(script, /不得据此扣分/, "AI review must not penalize ASR punctuation or capitalization");
 assert.match(script, /不要修改或覆盖页面上的原始转写/, "AI review must preserve original transcript");
-assert.match(script, /至少 40% 的可用时间安排给复盘/, "AI plans must prioritize review over task volume");
+assert.ok(script.includes("实际存在的复盘") && script.includes("不要用固定复盘比例挤掉整周新练习"), "AI plans must balance real review needs with weekly new practice");
 assert.match(script, /只有客观、明确、在当前语境下无合理争议/, "writing review must only mark definite errors");
 assert.match(buildScript, /结束学习中心\.exe/, "Windows package must include a visible stop-service executable");
-assert.match(stopper, /exec\.Command\("taskkill\.exe", "\/F", "\/IM", launcherImageName\)/, "stopper must target only the packaged launcher image");
+assert.match(stopper, /\/api\/app\/shutdown/, "stopper must try graceful shutdown first");
+assert.doesNotMatch(stopper, /"\/IM"/, "stopper must not terminate other installations");
 
 
 console.log(`Static smoke test passed: ${ids.length} unique ids, ${new Set(selectors).size} referenced selectors.`);

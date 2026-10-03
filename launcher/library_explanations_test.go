@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -53,8 +54,18 @@ func TestObjectiveExplanationValidationAndPersistence(t *testing.T) {
 		}
 		content, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"id": "q1", "explanation": "原文明确给出 Monday。", "trap": "Tuesday 与原文不符。", "evidence": []objectiveEvidence{{Source: "A", Quote: quote}}, "score": 99}}})
 		if deleteDuringCall {
-			path, _ := disk.libraryPathLocked("attempts", record.ID+".json")
-			os.Remove(path)
+			current, err := disk.loadAttemptLocked(record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deletion := httptest.NewRequest("DELETE", "/api/library/attempts/"+record.ID, nil)
+			deletion.Header.Set("X-ELP-Directory", disk.directoryIDLocked())
+			deletion.Header.Set("If-Match", strconv.Itoa(current.Revision))
+			result := httptest.NewRecorder()
+			mux.ServeHTTP(result, deletion)
+			if result.Code != 200 {
+				t.Fatal("delete failed", result.Code, result.Body.String())
+			}
 		}
 		raw, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(content)}, "finish_reason": "stop"}}})
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(raw)))}, nil

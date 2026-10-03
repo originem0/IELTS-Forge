@@ -139,6 +139,11 @@ func validateArchiveDirectory(store *diskStore, files []backupEntry) error {
 				}
 				seen[parent] = true
 				original, err := store.loadAttemptLocked(parent)
+				// Saved reviews retain their immutable scope after source deletion,
+				// just as validateAttemptLocked permits when continuing the review.
+				if errors.Is(err, os.ErrNotExist) {
+					break
+				}
 				if err != nil {
 					return err
 				}
@@ -150,14 +155,93 @@ func validateArchiveDirectory(store *diskStore, files []backupEntry) error {
 }
 
 func (s *diskStore) exportArchive(directoryID ...string) (*os.File, error) {
+	stage, err := s.pinBackupSnapshot(directoryID...)
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(stage)
+	return (&diskStore{directory: stage}).compressArchive()
+}
+
+// Pin immutable files with hard links under the archive lock. Compression and
+// validation then run on an independent snapshot while practice saves continue.
+// Atomic replacement of a live attempt cannot change the pinned old version.
+func (s *diskStore) pinBackupSnapshot(directoryID ...string) (string, error) {
 	s.Lock()
 	defer s.Unlock()
 	if err := s.checkDirectoryLocked(directoryID...); err != nil {
-		return nil, err
+		return "", err
 	}
 	if s.directory == "" {
-		return nil, errors.New("请先绑定数据目录")
+		return "", errors.New("请先绑定数据目录")
 	}
+	data, err := s.loadLocked()
+	if err != nil {
+		return "", err
+	}
+	stage, err := os.MkdirTemp(s.directory, ".backup-snapshot-")
+	if err != nil {
+		return "", err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	target := &diskStore{directory: stage}
+	raw, _ := json.Marshal(diskDataEnvelope{Version: 1, UpdatedAt: s.lastWrite, Data: data})
+	if err := atomicLibraryWrite(target.dataPathLocked(), raw); err != nil {
+		return "", err
+	}
+	for _, collection := range []string{"packs", "media", "attempts", "study-records", "study-media"} {
+		from, err := s.libraryPathLocked(collection, "")
+		if err != nil {
+			return "", err
+		}
+		to, err := target.libraryPathLocked(collection, "")
+		if err != nil {
+			return "", err
+		}
+		files, err := os.ReadDir(from)
+		if err != nil {
+			return "", err
+		}
+		for _, file := range files {
+			if strings.HasPrefix(file.Name(), ".library-") || strings.HasPrefix(file.Name(), ".import-") || strings.Contains(file.Name(), ".damaged-") {
+				continue
+			}
+			limit := backupFileLimit("library/" + collection + "/" + file.Name())
+			if file.IsDir() || limit == 0 {
+				return "", fmt.Errorf("资料目录含未知文件：%s", file.Name())
+			}
+			original, err := collectionFilePath(from, file.Name())
+			if err != nil {
+				return "", err
+			}
+			destination := filepath.Join(to, file.Name())
+			if err := os.Link(original, destination); err != nil {
+				// Filesystems without hard-link support retain the same snapshot rule.
+				input, err := os.Open(original)
+				if err != nil {
+					return "", err
+				}
+				name, _, _, copyErr := streamImportFile(input, to, limit)
+				input.Close()
+				if copyErr != nil {
+					return "", copyErr
+				}
+				if err := os.Rename(name, destination); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+	keep = true
+	return stage, nil
+}
+
+func (s *diskStore) compressArchive() (*os.File, error) {
 	file, err := os.CreateTemp("", "elp-backup-*.zip")
 	if err != nil {
 		return nil, err
@@ -223,14 +307,14 @@ func (s *diskStore) exportArchive(directoryID ...string) (*os.File, error) {
 			return nil, err
 		}
 		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".library-") || strings.HasPrefix(entry.Name(), ".import-") {
+			if strings.HasPrefix(entry.Name(), ".library-") || strings.HasPrefix(entry.Name(), ".import-") || strings.Contains(entry.Name(), ".damaged-") {
 				continue
 			}
 			name := "library/" + collection + "/" + entry.Name()
 			if backupFileLimit(name) == 0 || entry.IsDir() {
 				return nil, fmt.Errorf("资料目录含未知文件，未创建不完整备份：%s", name)
 			}
-			path, err := s.libraryPathLocked(collection, entry.Name())
+			path, err := collectionFilePath(directory, entry.Name())
 			if err != nil {
 				return nil, err
 			}
@@ -432,6 +516,8 @@ func registerBackupAPI(mux *http.ServeMux) {
 		http.ServeContent(w, r, "EnglishLearnPath-full-backup.zip", info.ModTime(), file)
 	})
 	mux.HandleFunc("POST /api/backup/restore", func(w http.ResponseWriter, r *http.Request) {
+		// A bounded, route-local deadline matches the 1 GiB import allowance.
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(10 * time.Minute))
 		file, err := os.CreateTemp("", "elp-restore-upload-*.zip")
 		if err != nil {
 			writeError(w, 500, "无法暂存备份")

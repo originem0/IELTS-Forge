@@ -49,7 +49,7 @@
     const headers = new Headers(options?.headers || {});
     if (!headers.has("X-ELP-Directory")) headers.set("X-ELP-Directory", directoryId);
     const response = await fetch(`/api/library/${path}`, { ...options, headers });
-    const result = await response.json().catch(() => ({}));
+    const result = await response.json().catch(error => { if (response.ok) throw error; return {}; });
     if (!response.ok) { const error = new Error(result.error || "题库服务不可用，请确认启动了新版程序"); error.status = response.status; throw error; }
     return result;
   }
@@ -90,6 +90,7 @@
         });
       }
       if (!result.packs.length) list.textContent = "还没有导入题包。";
+      window.dispatchEvent(new CustomEvent("elp:library-listed", { detail: { empty: !list.querySelector(".library-row") } }));
     } catch (error) {
       if (version !== refreshVersion) return;
       const notice = document.createElement("p");
@@ -104,6 +105,7 @@
     const back = $("libraryReturn");
     if (back) { back.classList.toggle("hidden", !returnSkill); back.textContent = `返回${skillNames[returnSkill] || ""}练习`; }
     location.hash = "library";
+    window.dispatchEvent(new CustomEvent("elp:open-library-import"));
   }
 
   async function setAuthoredUnitHidden(packId, unitId, hidden) {

@@ -7,6 +7,18 @@
   const collections = new Set(["writings", "speaking", "mistakes"]);
   function create({ request = (...args) => fetch(...args), onStatus = () => {}, onError = () => {} } = {}) {
     let root, revision = "", directory = "", queue = Promise.resolve(), pending = 0;
+    let outstanding = null;
+    let baseline = {};
+    const copy = value => value === undefined ? null : JSON.parse(JSON.stringify(value));
+    function remember(patch, result) {
+      for (const [key,value] of Object.entries(patch.metadata || {})) baseline[key] = copy(value);
+      for (const [key,change] of Object.entries(patch.collections || {})) {
+        const entries = new Map((baseline[key] || []).map(item => [item.id,item]));
+        for (const item of change.upsert || []) entries.set(item.id,copy(item));
+        for (const item of result.records?.[key] || []) entries.set(item.id,copy(item));
+        baseline[key] = (change.order || [...entries.keys()]).map(id => entries.get(id));
+      }
+    }
     let metadata = new Set(), orders = new Set(), records = new Map(), serial = 0;
     const versions = new Map(), rawValues = new WeakMap(), proxies = new WeakMap();
     const raw = value => rawValues.get(value) || value;
@@ -46,13 +58,45 @@
       if (pending) throw new Error("仍有数据正在保存，不能替换档案");
       root = raw(value); revision = response.revision || ""; directory = response.storage?.directoryId || "";
       metadata = new Set(); orders = new Set(); records = new Map(); versions.clear();
+      outstanding = null;
+      baseline = copy(response.data ?? root);
       return wrap(root);
     }
     async function send(method, payload) {
-      const response = await request("/api/data", { method, headers: { "Content-Type": "application/json", "X-ELP-Directory": directory, "If-Match": revision }, body: JSON.stringify(payload) });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "无法写入本地数据文件");
-      revision = result.revision || revision; onStatus(result.storage); return result;
+      let body = JSON.stringify(payload);
+      async function deliver(operation) {
+        for (let attempt=0; attempt<2; attempt++) {
+          try {
+            const response = await request("/api/data", { method:operation.method, headers:operation.headers, body:operation.body });
+            if (!response.ok) {
+              const result = await response.json().catch(() => ({}));
+              const error = new Error(result.error || "无法写入本地数据文件"); error.definitive = true; throw error;
+            }
+            const result = await response.json();
+            if (operation.method === "PATCH") remember(JSON.parse(operation.body), result);
+            revision = result.revision || revision; outstanding = null; onStatus(result.storage); return result;
+          } catch (error) {
+            if (error.definitive) { outstanding = null; throw error; }
+            if (attempt) throw error;
+          }
+        }
+      }
+      // Resolve an uncertain operation before sending edits made since it.
+      if (outstanding) {
+        const prior = outstanding, result = await deliver(prior);
+        if (prior.method === method && prior.body === body) return result;
+        if (method === "PATCH" && payload.base) {
+          for (const key of Object.keys(payload.base.metadata)) payload.base.metadata[key] = baseline[key] ?? null;
+          for (const [key,records] of Object.entries(payload.base.records)) {
+            const entries = new Map((baseline[key] || []).map(item => [item.id,item]));
+            for (const id of Object.keys(records)) records[id] = entries.get(id) ?? null;
+            if (payload.base.orders[key]) payload.base.orders[key] = [...entries.keys()];
+          }
+          body = JSON.stringify(payload);
+        }
+      }
+      outstanding = {method,body,headers:{"Content-Type":"application/json","X-ELP-Directory":directory,"If-Match":revision,"X-ELP-Commit":globalThis.crypto.randomUUID()}};
+      return deliver(outstanding);
     }
     function enqueue(action) {
       pending++;
@@ -66,15 +110,22 @@
         while (hasChanges()) {
           const keys = metadata, lists = orders, changed = records;
           metadata = new Set(); orders = new Set(); records = new Map();
-          const patch = { metadata: {}, collections: {} }, sentVersions = new Map();
-          for (const key of keys) patch.metadata[key] = root[key] ?? null;
+          const patch = { metadata: {}, collections: {}, base:{metadata:{},records:{},orders:{}} }, sentVersions = new Map();
+          for (const key of keys) { patch.metadata[key] = root[key] ?? null; patch.base.metadata[key] = baseline[key] ?? null; }
           for (const collection of new Set([...lists, ...changed.keys()])) {
             const entries = root[collection] || [];
             const ids = changed.get(collection) || new Set();
             const upsert = entries.filter(item => ids.has(item.id));
             for (const record of upsert) sentVersions.set(`${collection}/${record.id}`, versions.get(`${collection}/${record.id}`));
             patch.collections[collection] = { upsert };
-            if (lists.has(collection)) patch.collections[collection].order = entries.map(item => item.id);
+            const previous = new Map((baseline[collection] || []).map(item => [item.id,item]));
+            patch.base.records[collection] = Object.fromEntries(upsert.map(item => [item.id,previous.get(item.id) ?? null]));
+            if (lists.has(collection)) {
+              patch.collections[collection].order = entries.map(item => item.id);
+              patch.base.orders[collection] = [...previous.keys()];
+              const retained = new Set(entries.map(item => item.id));
+              for (const [id,item] of previous) if (!retained.has(id)) patch.base.records[collection][id] = item;
+            }
           }
           try {
             result = await send("PATCH", patch);
@@ -103,5 +154,26 @@
       get dirty() { return Boolean(pending || hasChanges()); }
     };
   }
-  return Object.freeze({ create });
+  function createRemoval({save,onError}) {
+    let deletionBusy = false;
+  async function persistRemoval({ prepare = async () => true, remove, restore, after, draft }) {
+    if (deletionBusy) return false;
+    deletionBusy = true;
+    let release = () => {}, changed = false;
+    try {
+      if (!await prepare()) return false;
+      if (draft) release = draft.hold();
+      remove(); changed = true;
+      try { await save(); } catch (error) { restore(); changed = false; throw error; }
+      await after();
+      return true;
+    } catch (error) {
+      onError(changed ? `删除已保存，页面更新失败：${error.message}` : `删除未保存，记录已保留：${error.message}`);
+      return false;
+    } finally { release(); deletionBusy = false; }
+  }
+
+    return persistRemoval;
+  }
+  return Object.freeze({ create, createRemoval });
 });

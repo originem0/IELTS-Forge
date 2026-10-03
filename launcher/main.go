@@ -53,9 +53,12 @@ type configStore struct {
 }
 
 type diskDataEnvelope struct {
-	Version   int             `json:"version"`
-	UpdatedAt string          `json:"updatedAt"`
-	Data      json.RawMessage `json:"data"`
+	ResolvedData   json.RawMessage `json:"-"`
+	Commits        []commitReceipt `json:"commits,omitempty"`
+	RecoverySource string          `json:"-"`
+	Version        int             `json:"version"`
+	UpdatedAt      string          `json:"updatedAt"`
+	Data           json.RawMessage `json:"data"`
 }
 
 type launcherConfig struct {
@@ -83,6 +86,7 @@ type chatRequest struct {
 	Temperature    float64       `json:"temperature,omitempty"`
 	MaxTokens      int           `json:"max_tokens,omitempty"`
 	OutputContract string        `json:"output_contract,omitempty"`
+	FormatAttempts int           `json:"format_attempts,omitempty"`
 }
 
 type upstreamResponse struct {
@@ -99,12 +103,14 @@ type upstreamResponse struct {
 }
 
 var (
-	settings     = &configStore{}
-	client       = &http.Client{Timeout: 90 * time.Second}
-	disk         *diskStore
-	appVersion   = "dev"
-	httpServer   *http.Server
-	shutdownOnce sync.Once
+	settings         = &configStore{}
+	client           = &http.Client{Timeout: 90 * time.Second}
+	disk             *diskStore
+	appVersion       = "dev"
+	httpServer       *http.Server
+	shutdownOnce     sync.Once
+	shutdownComplete = make(chan struct{})
+	instanceID       string
 )
 
 func main() {
@@ -133,6 +139,13 @@ func main() {
 	}
 	listenAddr := listener.Addr().String()
 	appURL := "http://" + listenAddr
+	cleanupInstance, err := registerInstance(appURL)
+	if err != nil {
+		listener.Close()
+		writeStartupError(err)
+		return
+	}
+	defer cleanupInstance()
 
 	mux := http.NewServeMux()
 	registerAPI(mux)
@@ -159,29 +172,29 @@ func main() {
 
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		writeStartupError(fmt.Errorf("本地服务意外停止：%w", err))
+	} else {
+		<-shutdownComplete
 	}
 }
 
-// beginShutdown drains in-flight requests (e.g. a data save that is still
-// writing) for a short grace period before exiting, so the user's last edit is
-// not truncated. Guarded by sync.Once against repeated shutdown calls.
+// Keep main alive until all accepted requests finish; Serve returns before
+// Shutdown finishes draining. Emergency termination remains an explicit choice.
 func beginShutdown() {
 	shutdownOnce.Do(func() {
 		time.Sleep(150 * time.Millisecond) // let the ok response flush to the browser
 		if httpServer != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_ = httpServer.Shutdown(ctx)
+			_ = httpServer.Shutdown(context.Background())
 		}
-		os.Exit(0)
+		close(shutdownComplete)
 	})
 }
 
 func registerAPI(mux *http.ServeMux) {
 	registerStudyAPI(mux)
+	registerStudyRecoveryAPI(mux)
 	registerLibraryAPI(mux)
 	mux.HandleFunc("GET /api/app/info", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"name": "English Learning Path", "version": appVersion, "local": true})
+		writeJSON(w, http.StatusOK, map[string]any{"name": "English Learning Path", "version": appVersion, "local": true, "instanceId": instanceID})
 	})
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "app": "EnglishLearnPath"})
@@ -213,6 +226,10 @@ func handleDataStatus(w http.ResponseWriter, _ *http.Request) {
 func handleDataLoad(w http.ResponseWriter, _ *http.Request) {
 	result, err := disk.snapshot()
 	if err != nil {
+		if errors.Is(err, errUnsupportedDataVersion) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		logAndError(w, http.StatusInternalServerError, "读取本地数据失败，请检查数据文件夹权限或数据文件是否完整", err)
 		return
 	}
@@ -229,7 +246,7 @@ func handleDataSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "学习数据格式无效")
 		return
 	}
-	result, err := disk.saveConditional(payload.Data, r.Header.Get("X-ELP-Directory"), r.Header.Get("If-Match"))
+	result, err := disk.saveConditional(payload.Data, r.Header.Get("X-ELP-Directory"), r.Header.Get("If-Match"), r.Header.Get("X-ELP-Commit"))
 	if err != nil {
 		if errors.Is(err, errDirectoryChanged) || errors.Is(err, errDataConflict) {
 			writeError(w, http.StatusConflict, err.Error())
@@ -417,7 +434,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	if maxTokens <= 0 || maxTokens > 8000 {
 		maxTokens = 6000
 	}
-	content, err := callChat(r.Context(), cfg, input.Messages, input.Temperature, maxTokens, false)
+	content, attempts, err := callChatBudgeted(r.Context(), cfg, input.Messages, input.Temperature, maxTokens, input.OutputContract, input.FormatAttempts)
 	if err != nil {
 		if hasImages {
 			err = imageRouteError(cfg, independentImage, err)
@@ -425,11 +442,7 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if err := validateOutputContract(content, input.OutputContract); err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"content": content, "model": cfg.Model})
+	writeJSON(w, http.StatusOK, map[string]any{"content": content, "model": cfg.Model, "attempts": attempts})
 }
 
 func validateOutputContract(content, contract string) error {
@@ -438,6 +451,8 @@ func validateOutputContract(content, contract string) error {
 	}
 	trimmed := strings.TrimSpace(content)
 	switch contract {
+	case "review-json-v1-writing-task1", "review-json-v1-writing-task2", "review-json-v1-speaking":
+		return validateStructuredReview(trimmed, contract)
 	case "study-plan-json-v1", "personal-language-bank-json-v1":
 		trimmed = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "```json"), "```"))
 		trimmed = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "```"), "```"))
@@ -472,7 +487,7 @@ func validateOutputContract(content, contract string) error {
 				return fmt.Errorf("模型返回的 JSON 字段 %q 必须是数组", key)
 			}
 		}
-		return nil
+		return validateAIJSONObject(value, contract)
 	case "review-markdown-v1-writing", "review-markdown-v1-speaking":
 		required := []string{"### 评分与小分", "### 总体评价", "### 确定语法错误", "### 原文优化建议", "### 目标水平范文", "### 最终值得记忆的语料"}
 		if contract == "review-markdown-v1-speaking" {
@@ -483,6 +498,9 @@ func validateOutputContract(content, contract string) error {
 		}
 		if !strings.HasPrefix(trimmed, "主题：") {
 			return errors.New("模型没有遵循网页报告格式，第一行必须是“主题：具体主题”")
+		}
+		if strings.TrimSpace(strings.TrimPrefix(strings.SplitN(trimmed, "\n", 2)[0], "主题：")) == "" {
+			return errors.New("报告缺少具体主题")
 		}
 		position := -1
 		for _, heading := range required {
@@ -496,6 +514,17 @@ func validateOutputContract(content, contract string) error {
 				return errors.New("模型没有按网页所需顺序返回报告章节，请重试或更换兼容模型")
 			}
 			position = next
+		}
+		for index, heading := range required {
+			start := strings.Index(content, heading) + len(heading)
+			end := len(content)
+			if index+1 < len(required) {
+				end = strings.Index(content, required[index+1])
+			}
+			body := strings.TrimSpace(content[start:end])
+			if strings.Trim(body, "\r\n \t#*-|:") == "" {
+				return fmt.Errorf("报告章节 %s 没有正文", heading)
+			}
 		}
 		return nil
 	default:
@@ -601,6 +630,9 @@ func callChat(ctx context.Context, cfg aiConfig, messages []chatMessage, tempera
 	}
 	var parsed upstreamResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			return "", outputFormatError("模型返回了无法解析的响应")
+		}
 		return "", fmt.Errorf("模型返回了无法解析的响应（HTTP %d）", response.StatusCode)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -610,17 +642,20 @@ func callChat(ctx context.Context, cfg aiConfig, messages []chatMessage, tempera
 		return "", fmt.Errorf("模型服务返回 HTTP %d", response.StatusCode)
 	}
 	if len(parsed.Choices) == 0 {
-		return "", errors.New("模型响应中没有 choices")
+		return "", outputFormatError("模型响应中没有 choices")
+	}
+	if parsed.Choices[0].FinishReason == "length" {
+		return "", outputFormatError("模型输出达到长度上限，尚未生成完整答案")
+	}
+	if reason := parsed.Choices[0].FinishReason; reason != "" && reason != "stop" {
+		return "", fmt.Errorf("模型没有完成回答（%s）", reason)
 	}
 	content := extractContent(parsed.Choices[0].Message.Content)
 	if strings.TrimSpace(content) == "" {
-		if parsed.Choices[0].FinishReason == "length" {
-			return "", errors.New("模型输出达到长度上限，尚未生成最终答案；这不是 API Key 无效的提示")
-		}
 		if strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent) != "" {
-			return "", errors.New("模型只返回了思考内容，没有最终答案；请检查模型的思考模式和输出限制")
+			return "", outputFormatError("模型只返回了思考内容，没有最终答案；请检查模型的思考模式和输出限制")
 		}
-		return "", errors.New("模型没有返回文字内容")
+		return "", outputFormatError("模型没有返回文字内容")
 	}
 	return content, nil
 }
