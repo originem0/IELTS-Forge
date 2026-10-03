@@ -30,7 +30,7 @@ const server=http.createServer(async(req,res)=>{
     const record=attempts.find(item=>item.id===match[1]);if(!record){res.statusCode=404;return res.end('{}');}
     return res.end(JSON.stringify(match[2]?{points:0,total:1,items:[{id:pack.units[0].groups[0].questions[0].id,correct:false}]}:record));
    }
-   if(url.pathname==='/api/ai/chat'){let body='';for await(const chunk of req)body+=chunk;const request=JSON.parse(body);requests.push(request);return res.end(JSON.stringify({content:JSON.stringify({summary:'',speaking:[],writing:[{domain:'Task 1 学术图表',collocations:['a steady increase｜图表中的持续上升'],sentencePatterns:[],sourceKeys:[]}]})}));}
+   if(url.pathname==='/api/ai/chat'){let body='';for await(const chunk of req)body+=chunk;const request=JSON.parse(body);requests.push(request);const source=JSON.parse(request.messages.at(-1).content.slice(request.messages.at(-1).content.indexOf('\n{')+1));const sourceKeys=(source.writing || []).map(item=>item.sourceKey);return res.end(JSON.stringify({content:JSON.stringify({summary:'',speaking:[],writing:[{domain:'Task 1 学术图表',collocations:['a steady increase｜图表中的持续上升'],sentencePatterns:[],sourceKeys}]})}));}
    res.statusCode=404;return res.end('{}');
   }
   const target=path.resolve(app,'.'+(url.pathname==='/'?'/index.html':url.pathname));
